@@ -46,6 +46,7 @@ from config import (
     EPSILON_CVAR,  # CVaR风险水平，默认0.05（95%置信度）
     IPOPT_MAX_ITER,  # IPOPT求解器最大迭代次数
     IPOPT_PRINT_LEVEL,  # IPOPT求解器打印级别
+    IDX_PSI,
     IDX_V,
     IDX_OMEGA
 )
@@ -54,6 +55,10 @@ from config import (
 from controllers.mpc_common import (
     pytorch_to_casadi_encoder,  # PyTorch编码器转CasADi函数
     pytorch_to_casadi_decoder  # PyTorch解码器转CasADi函数
+)
+from controllers.tracking_costs import (
+    MinSpeedRule,
+    resolve_tracking_cost_builder,
 )
 from model.projection import get_fixed_selector_matrices
 
@@ -67,6 +72,17 @@ MAX_OPT_SAMPLES = 20
 # 障碍物松弛变量的惩罚权重
 # 较大的值会强制满足障碍物约束，但可能导致问题不可解
 OBSTACLE_SLACK_PENALTY = 1000.0
+
+# 软最小速度约束参数：避免优化落入“停车解”
+MIN_SPEED_FLOOR = 2.0           # 绝对最低目标速度 [m/s]
+MIN_SPEED_REF_RATIO = 0.25      # 参考速度下限比例
+MIN_SPEED_SLACK_PENALTY = 1200.0  # 速度下限松弛惩罚（软调优）
+# 航向角跟踪权重：增强“沿参考方向前进”的方向感
+Q_PSI = 2.0
+# 前向进度权重：显式鼓励沿参考切向前进
+Q_PROGRESS = 8.0
+# 绝对控制量惩罚（软约束）：抑制长期满刹和满舵
+R_ABS_WEIGHTS = np.diag([0.8, 0.6])
 
 
 class KDRMPCController:
@@ -99,7 +115,8 @@ class KDRMPCController:
 
     def __init__(self, koopman_model, D_matrix, norm_params,
                  disturbance_samples=None, theta=THETA_WASSERSTEIN,
-                 epsilon=EPSILON_CVAR):
+                 epsilon=EPSILON_CVAR, cost_builder=None,
+                 cost_profile="default"):
         """
         初始化K-DRMPC控制器。
 
@@ -200,6 +217,14 @@ class KDRMPCController:
         self._E_ca = ca.DM(self.E)
         self._F_ca = ca.DM(self.F)
         self._D_vomega_ca = ca.DM(self.D_vomega)
+        D_psi = np.zeros((1, self.A.shape[0]))
+        D_psi[0, IDX_PSI] = 1.0
+        self._D_psi_ca = ca.DM(D_psi)
+        # 可替换代价构建器：允许外部注入不同的stage cost定义
+        self.cost_builder = resolve_tracking_cost_builder(
+            cost_builder,
+            profile=cost_profile,
+        )
 
         # ================================================================
         # 构建CasADi函数（编解码器）
@@ -315,6 +340,12 @@ class KDRMPCController:
         cost = 0
         Q = ca.DM(Q_WEIGHTS)
         R = ca.DM(R_WEIGHTS)
+        R_abs = ca.DM(R_ABS_WEIGHTS)
+
+        # 速度下限软约束松弛变量（每个预测步一个）
+        v_slack = opti.variable(T)
+        opti.subject_to(v_slack >= 0)
+        cost += MIN_SPEED_SLACK_PENALTY * ca.dot(v_slack, v_slack)
 
         # Position tracking weight (decoded position vs reference)
         Q_pos = 0.5
@@ -326,6 +357,15 @@ class KDRMPCController:
         ref_py_norm = np.array([(ref_trajectory[min(t, len(ref_trajectory)-1), 1]
                                  - self.norm_params['py_mean']) / self.norm_params['py_std']
                                 for t in range(T)])
+        ref_psi = np.array([
+            ref_trajectory[min(t, len(ref_trajectory)-1), IDX_PSI]
+            for t in range(T)
+        ])
+
+        min_speed_rule = MinSpeedRule(
+            floor_abs=MIN_SPEED_FLOOR,
+            floor_ratio=MIN_SPEED_REF_RATIO,
+        )
 
         for t in range(T):
             y_t = ca.vertcat(
@@ -333,20 +373,31 @@ class KDRMPCController:
                 ca.mtimes(self._F_ca, Z[t])
             )
             y_ref_t = ca.DM(y_ref[t])
-            cost += ca.mtimes([(y_t - y_ref_t).T, Q, (y_t - y_ref_t)])
-
-            # Position tracking via fixed linear selector (every 4th step)
-            if t % 4 == 0:
-                pos = ca.mtimes(self._D_pos_ca, Z[t])
-                pos_err_x = pos[0] - ref_px_norm[t]
-                pos_err_y = pos[1] - ref_py_norm[t]
-                cost += Q_pos * (pos_err_x**2 + pos_err_y**2)
-
-            if t == 0:
-                du = U[:, t] - ca.DM(self.u_prev)
-            else:
-                du = U[:, t] - U[:, t - 1]
-            cost += ca.mtimes([du.T, R, du])
+            cost += self.cost_builder.stage_cost(
+                opti=opti,
+                t=t,
+                z_t=Z[t],
+                u_t=U[:, t],
+                u_prev=ca.DM(self.u_prev),
+                u_prev_step=(U[:, t - 1] if t > 0 else None),
+                y_t=y_t,
+                y_ref_t=y_ref_t,
+                ref_psi_t=float(ref_psi[t]),
+                ref_px_norm_t=float(ref_px_norm[t]),
+                ref_py_norm_t=float(ref_py_norm[t]),
+                d_pos_ca=self._D_pos_ca,
+                d_psi_ca=self._D_psi_ca,
+                q=Q,
+                r=R,
+                q_psi=Q_PSI,
+                q_progress=Q_PROGRESS,
+                q_pos=Q_pos,
+                add_position_term=(t % 4 == 0),
+                add_abs_u_term=True,
+                r_abs=R_abs,
+                min_speed_rule=min_speed_rule,
+                v_slack_t=v_slack[t],
+            )
 
         # === Input Constraints ===
         for t in range(T):

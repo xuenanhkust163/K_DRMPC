@@ -49,8 +49,26 @@ def compute_all_metrics(result, track, obstacles=None, w_samples=None):
         _, _, lat_err = track.closest_point(positions[t, 0], positions[t, 1])  # 计算到赛道中心线的横向误差
         lat_errors.append(lat_err)  # 将横向误差添加到列表
     lat_errors = np.array(lat_errors)  # 转换为NumPy数组
+    abs_lat_errors = np.abs(lat_errors)  # 绝对横向误差，用于衡量是否贴近中线
     metrics['tracking_error_rms'] = np.sqrt(np.mean(lat_errors**2))  # 计算横向误差的均方根
-    metrics['tracking_error_max'] = np.max(np.abs(lat_errors))  # 计算最大绝对横向误差
+    metrics['tracking_error_max'] = np.max(abs_lat_errors)  # 计算最大绝对横向误差
+    metrics['tracking_error_mean_abs'] = np.mean(abs_lat_errors)  # 平均绝对横向误差
+    metrics['tracking_error_p95_abs'] = np.percentile(abs_lat_errors, 95)  # 95分位绝对横向误差
+    metrics['tracking_within_1m_pct'] = 100.0 * np.mean(abs_lat_errors <= 1.0)  # 落在中线±1m内的比例
+    metrics['tracking_within_2m_pct'] = 100.0 * np.mean(abs_lat_errors <= 2.0)  # 落在中线±2m内的比例
+
+    # 统计连续偏离中线（>2m）的最长持续步数
+    off_center_mask = abs_lat_errors > 2.0
+    max_off_center_run = 0
+    current_run = 0
+    for is_off_center in off_center_mask:
+        if is_off_center:
+            current_run += 1
+            if current_run > max_off_center_run:
+                max_off_center_run = current_run
+        else:
+            current_run = 0
+    metrics['tracking_offcenter_max_steps'] = int(max_off_center_run)
 
     # 速度指标
     velocities = states[:, IDX_V]  # 提取速度列
@@ -128,6 +146,8 @@ def format_metrics_table(all_metrics, methods):
     metric_names = [
         ('lap_time', 'Lap Time (s)', '.1f'),  # 圈速时间，保留1位小数
         ('tracking_error_rms', 'Tracking Error RMS (m)', '.2f'),  # 跟踪误差RMS，保留2位小数
+        ('tracking_error_p95_abs', 'Tracking Error P95 |e_y| (m)', '.2f'),  # 跟踪误差95分位
+        ('tracking_within_2m_pct', 'Tracking Within ±2m (%)', '.1f'),  # 中线±2m覆盖率
         ('max_speed', 'Max Speed (m/s)', '.1f'),  # 最大速度，保留1位小数
         ('constraint_violation_pct', 'Constraint Violation (%)', '.1f'),  # 约束违反百分比，保留1位小数
         ('cvar_safety_margin', 'CVaR Safety Margin', '.3f'),  # CVaR安全裕度，保留3位小数

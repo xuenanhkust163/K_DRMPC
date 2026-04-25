@@ -41,6 +41,7 @@ from config import (
     VEHICLE_RADIUS,  # 车辆半径 [米]
     IPOPT_MAX_ITER,  # IPOPT求解器最大迭代次数
     IPOPT_PRINT_LEVEL,  # IPOPT求解器打印级别
+    IDX_PSI,
     IDX_V,
     IDX_OMEGA
 )
@@ -50,6 +51,7 @@ from controllers.mpc_common import (
     pytorch_to_casadi_encoder,  # PyTorch编码器转CasADi函数
     pytorch_to_casadi_decoder  # PyTorch解码器转CasADi函数
 )
+from controllers.tracking_costs import resolve_tracking_cost_builder
 from model.projection import get_fixed_selector_matrices
 
 # 障碍物接近阈值：只有车辆在这个距离内才添加障碍物约束
@@ -59,6 +61,10 @@ OBSTACLE_PROXIMITY = 200.0  # 单位：米
 # 障碍物松弛变量的惩罚权重
 # 较大的值会强制满足障碍物约束，但可能导致问题不可解
 OBSTACLE_SLACK_PENALTY = 1000.0
+# 航向角跟踪权重：增强“沿参考方向前进”的方向感
+Q_PSI = 2.0
+# 前向进度权重：显式鼓励沿参考切向前进
+Q_PROGRESS = 3.0
 
 
 class KMPCController:
@@ -86,7 +92,8 @@ class KMPCController:
               ||decoded_pos - obs|| >= d_min  (障碍物约束，软化)
     """
 
-    def __init__(self, koopman_model, D_matrix, norm_params):
+    def __init__(self, koopman_model, D_matrix, norm_params,
+                 cost_builder=None, cost_profile="default"):
         """
         初始化K-MPC控制器。
 
@@ -151,6 +158,14 @@ class KMPCController:
         self._E_ca = ca.DM(self.E)
         self._F_ca = ca.DM(self.F)
         self._D_vomega_ca = ca.DM(self.D_vomega)
+        D_psi = np.zeros((1, self.A.shape[0]))
+        D_psi[0, IDX_PSI] = 1.0
+        self._D_psi_ca = ca.DM(D_psi)
+        # 可替换代价构建器：允许外部注入不同的stage cost定义
+        self.cost_builder = resolve_tracking_cost_builder(
+            cost_builder,
+            profile=cost_profile,
+        )
 
     def _encode_state(self, x_physical):
         """
@@ -315,37 +330,36 @@ class KMPCController:
             / self.norm_params['py_std']
             for t in range(T)
         ])
+        ref_psi = np.array([
+            ref_trajectory[min(t, len(ref_trajectory)-1), IDX_PSI]
+            for t in range(T)
+        ])
 
-        # 遍历预测时域，累加每一步的代价
+        # 遍历预测时域，累加每一步的代价（由可替换cost builder计算）
         for t in range(T):
-            # 5.1 通过D投影跟踪[v, omega]
-            # 使用投影矩阵D从Koopman状态z提取[v, omega]
             y_t = ca.mtimes(self._D_vomega_ca, Z[t])
             y_ref_t = ca.DM(y_ref[t])
-            # 二次代价: (y - y_ref)^T * Q * (y - y_ref)
-            cost += ca.mtimes([(y_t - y_ref_t).T, Q, (y_t - y_ref_t)])
-
-            # 5.2 通过解码器跟踪位置（每隔4步）
-            # 为了限制NLP复杂度，不是每一步都使用解码器
-            # 解码器是非线性的，会增加求解难度
-            if t % 4 == 0:
-                # 使用解码器将Koopman状态映射回物理空间
-                pos = ca.mtimes(self._D_pos_ca, Z[t])
-                pos_err_x = pos[0] - ref_px_norm[t]
-                pos_err_y = pos[1] - ref_py_norm[t]
-                # 位置误差的二次代价
-                cost += Q_pos * (pos_err_x**2 + pos_err_y**2)
-
-            # 5.3 控制平滑性（惩罚控制增量）
-            # 计算控制增量du = u_t - u_{t-1}
-            if t == 0:
-                # 第一步使用上一次的控制输入
-                du = U[:, t] - ca.DM(self.u_prev)
-            else:
-                # 其他步使用前一步的控制输入
-                du = U[:, t] - U[:, t - 1]
-            # 控制增量的二次代价: du^T * R * du
-            cost += ca.mtimes([du.T, R, du])
+            cost += self.cost_builder.stage_cost(
+                opti=opti,
+                t=t,
+                z_t=Z[t],
+                u_t=U[:, t],
+                u_prev=ca.DM(self.u_prev),
+                u_prev_step=(U[:, t - 1] if t > 0 else None),
+                y_t=y_t,
+                y_ref_t=y_ref_t,
+                ref_psi_t=float(ref_psi[t]),
+                ref_px_norm_t=float(ref_px_norm[t]),
+                ref_py_norm_t=float(ref_py_norm[t]),
+                d_pos_ca=self._D_pos_ca,
+                d_psi_ca=self._D_psi_ca,
+                q=Q,
+                r=R,
+                q_psi=Q_PSI,
+                q_progress=Q_PROGRESS,
+                q_pos=Q_pos,
+                add_position_term=(t % 4 == 0),
+            )
 
         # ================================================================
         # 步骤6：添加约束

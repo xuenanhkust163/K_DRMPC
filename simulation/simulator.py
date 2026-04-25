@@ -73,7 +73,8 @@ class Simulator:
         self.disturbance_gen = disturbance_gen  # 存储干扰生成器（可能为None）
 
     def run(self, x0=None, max_steps=MAX_SIM_STEPS, lap_fraction=0.95,
-            verbose=True):
+            verbose=True, detailed_step_log=False,
+            detailed_step_log_max_steps=None):
         """
         运行闭环仿真。
 
@@ -82,6 +83,8 @@ class Simulator:
             max_steps: 最大仿真步数
             lap_fraction: 完成"一圈"所需的赛道完成比例（默认0.95即95%）
             verbose: 是否打印进度信息
+            detailed_step_log: 是否逐步打印详细数值
+            detailed_step_log_max_steps: 逐步日志最大打印步数（None表示不限制）
 
         Returns:
             result: SimResult实例，包含仿真结果数据
@@ -173,6 +176,34 @@ class Simulator:
 
             x = x_next  # 更新当前状态为下一时刻状态
             result.states.append(x.copy())  # 将新状态添加到结果列表
+
+            # 逐步详细日志：用于排查速度归零等问题
+            if detailed_step_log and (
+                detailed_step_log_max_steps is None or step < detailed_step_log_max_steps
+            ):
+                x_str = np.array2string(result.states[-2], precision=4, suppress_small=True)
+                ref_str = np.array2string(ref[0], precision=4, suppress_small=True)
+                u_str = np.array2string(u_opt, precision=4, suppress_small=True)
+                noise_str = np.array2string(noise, precision=4, suppress_small=True)
+                x_next_str = np.array2string(x_next, precision=4, suppress_small=True)
+                print(
+                    f"[Step {step:04d}] t={t_sim:7.2f}s "
+                    f"idx={idx:4d} s={current_s:8.2f}m ds={ds:7.3f}m "
+                    f"cum={cumulative_s:8.2f}m prog={cumulative_s/max_s*100:6.2f}% lat={lat_err:8.4f}m"
+                )
+                print(f"  x      = {x_str}")
+                print(f"  ref[0] = {ref_str}")
+                print(f"  u_opt  = {u_str}")
+                print(
+                    f"  solve  = status={info.get('status','unknown')} "
+                    f"time={info.get('solve_time', 0.0) * 1000:.2f}ms"
+                )
+                print(f"  noise  = {noise_str}")
+                print(f"  x_next = {x_next_str}")
+                print(
+                    f"  speed  = v:{result.states[-2][IDX_V]:.4f} -> {x_next[IDX_V]:.4f} m/s, "
+                    f"omega:{result.states[-2][IDX_OMEGA]:.4f} -> {x_next[IDX_OMEGA]:.4f} rad/s"
+                )
 
             # 进度报告（每100步打印一次）
             if verbose and (step + 1) % 100 == 0:
