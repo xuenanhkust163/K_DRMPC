@@ -54,7 +54,7 @@ class DeepKoopmanPaper(nn.Module):
         初始化Deep Koopman网络。
 
         参数:
-            n_x: 整数，物理状态维度，默认5 [px, py, v, psi, omega]
+            n_x: 整数，物理状态维度，默认5 [px, py, psi, v, omega]
             n_u: 整数，控制输入维度，默认2 [a, delta]
             n_z: 整数，Koopman空间维度，默认32
         """

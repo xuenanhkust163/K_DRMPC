@@ -33,6 +33,14 @@ from config import (
 )
 
 
+def _legacy_to_canonical_state_order(x):
+    """Convert [px, py, v, psi, omega] -> [px, py, psi, v, omega]."""
+    x_new = x.copy()
+    x_new[..., 2] = x[..., 3]
+    x_new[..., 3] = x[..., 2]
+    return x_new
+
+
 def load_norm_params(json_path=NORM_JSON_PATH):
     """
     加载归一化参数（px和py的均值和标准差）。
@@ -70,7 +78,7 @@ def normalize_state(x, norm_params):
 
     参数:
         x: numpy数组，状态向量
-           - 形状(5,): 单个状态 [px, py, v, psi, omega]
+           - 形状(5,): 单个状态 [px, py, psi, v, omega]
            - 形状(N, 5): N个状态的批量数据
         norm_params: 字典，包含px_mean, px_std, py_mean, py_std
 
@@ -166,6 +174,11 @@ def load_and_subsample(npz_path=DATA_NPZ_PATH, norm_json_path=NORM_JSON_PATH,
     U_t = data['U_t']
     # X_t1: 下一时刻的状态，形状(N, 5)，已经归一化
     X_t1 = data['X_t1']
+
+    # 数据文件是历史顺序 [px, py, v, psi, omega]，统一转换为
+    # 代码内部顺序 [px, py, psi, v, omega]
+    X_t = _legacy_to_canonical_state_order(X_t)
+    X_t1 = _legacy_to_canonical_state_order(X_t1)
 
     # 重构完整轨迹
     # 原始数据是连续的状态转移对：(X_t[0], X_t1[0]), (X_t[1], X_t1[1]), ...

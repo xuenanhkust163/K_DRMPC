@@ -283,7 +283,6 @@ def train_model(model, train_loader, val_loader, epochs=EPOCHS, lr=LEARNING_RATE
                 # 保存Koopman矩阵（用于后续MPC优化）
                 'A': model.A.detach().cpu().numpy().tolist(),  # 状态转移矩阵
                 'B': model.B.detach().cpu().numpy().tolist(),  # 控制矩阵
-                'C': model.C.detach().cpu().numpy().tolist(),  # 输出矩阵
             }
             # 保存最佳模型检查点
             model_path = os.path.join(save_dir, 'best_koopman_model.pth')
@@ -376,10 +375,10 @@ def load_trained_model(model_path=None, device='cpu'):
     # 检查检查点格式并加载模型权重
     if 'model_state_dict' in checkpoint:
         # 标准格式：包含'model_state_dict'键
-        model.load_state_dict(checkpoint['model_state_dict'])
+        model.load_state_dict(checkpoint['model_state_dict'], strict=False)
     else:
         # 旧格式：检查点本身就是state_dict
-        model.load_state_dict(checkpoint)
+        model.load_state_dict(checkpoint, strict=False)
 
     # 将模型设置为评估模式
     # 这会禁用dropout等训练时特有的行为

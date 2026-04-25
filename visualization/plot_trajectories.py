@@ -86,8 +86,8 @@ def plot_state_comparison(results, track, filename=None, save_dir=FIGURES_DIR):
     """
     os.makedirs(save_dir, exist_ok=True)
 
-    state_labels = ['$p_x$ (m)', '$p_y$ (m)', '$v$ (m/s)',
-                    '$\\psi$ (rad)', '$\\omega$ (rad/s)']
+    state_labels = ['$p_x$ (m)', '$p_y$ (m)', '$\\psi$ (rad)',
+                    '$v$ (m/s)', '$\\omega$ (rad/s)']
 
     fig, axes = plt.subplots(5, 1, figsize=(14, 15), sharex=True)
 

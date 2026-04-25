@@ -10,7 +10,7 @@ import sys  # 导入系统模块，用于路径操作
 # 将父目录添加到系统路径，以便导入项目模块
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # 从配置文件导入安全距离和车辆半径常量
-from config import D_SAFE, VEHICLE_RADIUS
+from config import D_SAFE, VEHICLE_RADIUS, IDX_V
 
 
 def compute_all_metrics(result, track, obstacles=None, w_samples=None):
@@ -53,7 +53,7 @@ def compute_all_metrics(result, track, obstacles=None, w_samples=None):
     metrics['tracking_error_max'] = np.max(np.abs(lat_errors))  # 计算最大绝对横向误差
 
     # 速度指标
-    velocities = states[:, 2]  # 提取速度列（状态向量的第3个元素）
+    velocities = states[:, IDX_V]  # 提取速度列
     metrics['max_speed'] = np.max(velocities)  # 记录最大速度
     metrics['mean_speed'] = np.mean(velocities)  # 记录平均速度
     metrics['min_speed'] = np.min(velocities)  # 记录最小速度

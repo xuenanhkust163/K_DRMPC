@@ -5,6 +5,7 @@ Abstract base class for track definitions.
 import numpy as np
 from abc import ABC, abstractmethod
 from scipy.interpolate import CubicSpline
+from config import IDX_PX, IDX_PY, IDX_PSI, IDX_V, IDX_OMEGA
 
 
 class BaseTrack(ABC):
@@ -89,27 +90,27 @@ class BaseTrack(ABC):
             v_max: maximum velocity
 
         Returns:
-            ref: (horizon, 5) reference states [px, py, v, psi, omega]
+            ref: (horizon, 5) reference states [px, py, psi, v, omega]
         """
         ref = np.zeros((horizon, 5))
         N = self._num_points
 
         for t in range(horizon):
             idx = (start_idx + t) % N
-            ref[t, 0] = self._centerline_x[idx]  # px
-            ref[t, 1] = self._centerline_y[idx]  # py
-            ref[t, 3] = self._heading[idx]        # psi
+            ref[t, IDX_PX] = self._centerline_x[idx]  # px
+            ref[t, IDX_PY] = self._centerline_y[idx]  # py
+            ref[t, IDX_PSI] = self._heading[idx]      # psi
 
             # Speed from curvature
             kappa = abs(self._curvature[idx])
             if v_ref is not None:
-                ref[t, 2] = v_ref
+                ref[t, IDX_V] = v_ref
             elif kappa > 1e-6:
-                ref[t, 2] = min(v_max, np.sqrt(a_lat_max / kappa))
+                ref[t, IDX_V] = min(v_max, np.sqrt(a_lat_max / kappa))
             else:
-                ref[t, 2] = v_max
+                ref[t, IDX_V] = v_max
 
-            ref[t, 4] = ref[t, 2] * self._curvature[idx]  # omega = v * kappa
+            ref[t, IDX_OMEGA] = ref[t, IDX_V] * self._curvature[idx]  # omega = v * kappa
 
         return ref
 
@@ -122,7 +123,7 @@ class BaseTrack(ABC):
         """
         ref = self.get_reference_trajectory(start_idx, horizon,
                                             a_lat_max=a_lat_max, v_max=v_max)
-        return ref[:, [2, 4]]  # [v, omega]
+        return ref[:, [IDX_V, IDX_OMEGA]]  # [v, omega]
 
     def _compute_geometry(self, x, y):
         """Compute heading, curvature, and arc length from (x, y) coordinates."""

@@ -30,7 +30,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import (
     N_Z,  # Koopman空间维度，默认8
     GAMMA_RIDGE,  # 岭回归正则化参数，默认0.001
-    MODEL_DIR  # 模型保存目录
+    MODEL_DIR,  # 模型保存目录
+    IDX_V,
+    IDX_OMEGA
 )
 
 
@@ -56,7 +58,7 @@ def compute_projection_matrix(model, X_data, gamma=GAMMA_RIDGE, device='cpu'):
         model: 训练好的DeepKoopmanPaper模型
               用于将状态编码到Koopman空间
         X_data: numpy数组，形状为(N, 5)
-               状态数据 [px, py, v, psi, omega]
+               状态数据 [px, py, psi, v, omega]
                N是样本数量
         gamma: 浮点数，岭回归正则化参数
               默认使用config.py中的GAMMA_RIDGE（0.001）
@@ -94,9 +96,9 @@ def compute_projection_matrix(model, X_data, gamma=GAMMA_RIDGE, device='cpu'):
     # ================================================================
     # 步骤2：提取目标变量
     # ================================================================
-    # 从状态数据中提取速度v（索引2）和角速度omega（索引4）
-    # 状态顺序：[px(0), py(1), v(2), psi(3), omega(4)]
-    Y = X_data[:, [2, 4]]  # 形状：(N, 2)，列分别为[v, omega]
+    # 从状态数据中提取速度v和角速度omega
+    # 状态顺序：[px(0), py(1), psi(2), v(3), omega(4)]
+    Y = X_data[:, [IDX_V, IDX_OMEGA]]  # 形状：(N, 2)，列分别为[v, omega]
 
     # ================================================================
     # 步骤3：使用岭回归求解投影矩阵D

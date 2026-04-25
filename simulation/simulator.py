@@ -13,7 +13,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # 从配置文件导入常量和参数
 from config import (
     DT, MAX_SIM_STEPS, V_MIN, V_MAX, A_MIN, A_MAX,
-    DELTA_MAX, RESULTS_DIR
+    DELTA_MAX, RESULTS_DIR,
+    IDX_PX, IDX_PY, IDX_PSI, IDX_V, IDX_OMEGA
 )
 # 从自行车模型模块导入离散时间步长函数
 from vehicle.bicycle_model import discrete_step
@@ -95,8 +96,8 @@ class Simulator:
             heading = track.get_heading()  # 获取赛道中心线各点的航向角
             # 从索引0处开始，使用参考速度初始化
             ref_init = track.get_reference_v_omega(0, 1)  # 获取初始参考速度和角速度
-            # 构建初始状态向量：[x位置, y位置, 速度, 航向角, 角速度]
-            x0 = np.array([cx[0], cy[0], ref_init[0, 0], heading[0], ref_init[0, 1]])
+            # 构建初始状态向量：[x位置, y位置, 航向角, 速度, 角速度]
+            x0 = np.array([cx[0], cy[0], heading[0], ref_init[0, 0], ref_init[0, 1]])
 
         result = SimResult(controller.name, track.__class__.__name__)  # 创建仿真结果对象
         controller.reset()  # 重置控制器状态
@@ -153,15 +154,15 @@ class Simulator:
                 # 对干扰进行适当缩放以符合物理状态的实际范围
                 noise[0] = w[0] * 0.1   # 位置x噪声 [米]
                 noise[1] = w[1] * 0.1   # 位置y噪声 [米]
-                noise[2] = w[2] * 0.05  # 速度噪声 [米/秒]
-                noise[3] = w[3] * 0.01  # 航向角噪声 [弧度]
-                noise[4] = w[4] * 0.01  # 横摆角速度噪声 [弧度/秒]
+                noise[IDX_PSI] = w[3] * 0.01   # 航向角噪声 [弧度]
+                noise[IDX_V] = w[2] * 0.05     # 速度噪声 [米/秒]
+                noise[IDX_OMEGA] = w[4] * 0.01  # 横摆角速度噪声 [弧度/秒]
 
             # 传播被控对象动力学（应用控制输入和干扰）
             x_next = discrete_step(x, u_opt) + noise  # 计算下一时刻状态并叠加干扰
 
             # 强制执行状态边界约束
-            x_next[2] = np.clip(x_next[2], V_MIN, V_MAX)  # 限制速度在[V_MIN, V_MAX]范围内
+            x_next[IDX_V] = np.clip(x_next[IDX_V], V_MIN, V_MAX)  # 限制速度在[V_MIN, V_MAX]范围内
 
             # 记录当前步的数据到结果对象
             result.controls.append(u_opt.copy())  # 保存控制输入
@@ -176,7 +177,7 @@ class Simulator:
             # 进度报告（每100步打印一次）
             if verbose and (step + 1) % 100 == 0:
                 print(f"  步骤 {step+1}/{max_steps}: "
-                      f"速度={x[2]:.1f}m/s, "
+                      f"速度={x[IDX_V]:.1f}m/s, "
                       f"横向误差={lat_err:.1f}m, "
                       f"进度={cumulative_s/max_s*100:.1f}%, "
                       f"求解时间={info.get('solve_time',0)*1000:.1f}ms")

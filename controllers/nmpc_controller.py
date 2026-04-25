@@ -14,6 +14,7 @@ from config import (
     N_X, N_U, T_HORIZON, DT, Q_WEIGHTS, R_WEIGHTS,
     V_MIN, V_MAX, A_MIN, A_MAX, DELTA_MAX, DELTA_RATE_MAX, D_SAFE,
     VEHICLE_RADIUS, IPOPT_MAX_ITER, IPOPT_PRINT_LEVEL
+    , IDX_V, IDX_OMEGA
 )
 from vehicle.bicycle_model import casadi_dynamics
 
@@ -75,8 +76,8 @@ class NMPCController:
 
         for t in range(T):
             ref_t = ref_trajectory[min(t, len(ref_trajectory) - 1)]
-            y_t = ca.vertcat(X[2, t], X[4, t])
-            y_ref = ca.DM([ref_t[2], ref_t[4]])
+            y_t = ca.vertcat(X[IDX_V, t], X[IDX_OMEGA, t])
+            y_ref = ca.DM([ref_t[IDX_V], ref_t[IDX_OMEGA]])
             cost += ca.mtimes([(y_t - y_ref).T, Q, (y_t - y_ref)])
 
             if t == 0:
@@ -105,7 +106,7 @@ class NMPCController:
 
         # State constraints
         for t in range(T + 1):
-            opti.subject_to(opti.bounded(V_MIN, X[2, t], V_MAX))
+            opti.subject_to(opti.bounded(V_MIN, X[IDX_V, t], V_MAX))
 
         # Obstacle avoidance (nonlinear)
         for obs in obstacles:

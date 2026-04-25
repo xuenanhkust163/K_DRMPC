@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # 从配置文件导入MPC相关参数
 from config import (
-    N_X,  # 物理状态维度，默认5 [px, py, v, psi, omega]
+    N_X,  # 物理状态维度，默认5 [px, py, psi, v, omega]
     N_U,  # 控制输入维度，默认2 [加速度a, 转向角delta]
     N_Z,  # Koopman空间维度，默认8
     T_HORIZON,  # 预测时域长度，默认20步
@@ -40,7 +40,9 @@ from config import (
     D_SAFE,  # 安全距离余量 [米]
     VEHICLE_RADIUS,  # 车辆半径 [米]
     IPOPT_MAX_ITER,  # IPOPT求解器最大迭代次数
-    IPOPT_PRINT_LEVEL  # IPOPT求解器打印级别
+    IPOPT_PRINT_LEVEL,  # IPOPT求解器打印级别
+    IDX_V,
+    IDX_OMEGA
 )
 
 # 从MPC公共模块导入编解码器转换函数
@@ -152,7 +154,7 @@ class KMPCController:
 
         参数:
             x_physical: numpy数组，形状为(5,)
-                       物理状态 [px, py, v, psi, omega]
+                       物理状态 [px, py, psi, v, omega]
 
         返回:
             z: numpy数组，形状为(n_z,)
@@ -201,7 +203,7 @@ class KMPCController:
 
         参数:
             x_current: numpy数组，形状为(5,)
-                      当前物理状态 [px, py, v, psi, omega]
+                      当前物理状态 [px, py, psi, v, omega]
             ref_trajectory: numpy数组，形状为(T, 5)
                           参考轨迹（物理坐标）
             obstacles: 列表，每个元素为(ox, oy, radius)
@@ -245,7 +247,7 @@ class KMPCController:
             # 使用min确保不会超出参考轨迹长度
             ref_t = ref_trajectory[min(t, len(ref_trajectory) - 1)]
             # 提取速度v（索引2）和角速度omega（索引4）
-            y_ref[t] = [ref_t[2], ref_t[4]]
+            y_ref[t] = [ref_t[IDX_V], ref_t[IDX_OMEGA]]
 
         # ================================================================
         # 步骤3：创建CasADi优化问题

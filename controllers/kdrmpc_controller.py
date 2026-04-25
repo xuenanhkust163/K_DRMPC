@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # 从配置文件导入MPC和分布鲁棒优化相关参数
 from config import (
-    N_X,  # 物理状态维度，默认5 [px, py, v, psi, omega]
+    N_X,  # 物理状态维度，默认5 [px, py, psi, v, omega]
     N_U,  # 控制输入维度，默认2 [加速度a, 转向角delta]
     N_Z,  # Koopman空间维度，默认8
     N_W,  # 干扰维度，用于采样历史扰动
@@ -45,7 +45,9 @@ from config import (
     THETA_WASSERSTEIN,  # Wasserstein球半径，默认0.1
     EPSILON_CVAR,  # CVaR风险水平，默认0.05（95%置信度）
     IPOPT_MAX_ITER,  # IPOPT求解器最大迭代次数
-    IPOPT_PRINT_LEVEL  # IPOPT求解器打印级别
+    IPOPT_PRINT_LEVEL,  # IPOPT求解器打印级别
+    IDX_V,
+    IDX_OMEGA
 )
 
 # 从MPC公共模块导入编解码器转换函数
@@ -240,7 +242,7 @@ class KDRMPCController:
 
         参数:
             x_current: numpy数组，形状为(5,)
-                      当前物理状态 [px, py, v, psi, omega]
+                      当前物理状态 [px, py, psi, v, omega]
             ref_trajectory: numpy数组，形状为(T, 5)
                           参考轨迹（物理坐标）
             obstacles: 列表，每个元素为(ox, oy, radius)
@@ -269,7 +271,7 @@ class KDRMPCController:
         y_ref = np.zeros((T, 2))
         for t in range(T):
             ref_t = ref_trajectory[min(t, len(ref_trajectory) - 1)]
-            y_ref[t] = [ref_t[2], ref_t[4]]  # [v, omega]
+            y_ref[t] = [ref_t[IDX_V], ref_t[IDX_OMEGA]]  # [v, omega]
 
         # 步骤3：过滤附近的障碍物
         px, py = x_current[0], x_current[1]
