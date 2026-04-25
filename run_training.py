@@ -13,7 +13,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import (
-    N_X, N_U, N_Z, N_W, BATCH_SIZE, EPOCHS, LEARNING_RATE,
+    N_X, N_U, N_Z, BATCH_SIZE, EPOCHS, LEARNING_RATE,
     K_PRED, VAL_SPLIT, MODEL_DIR, GAMMA_RIDGE
 )
 from data.data_loader import load_and_subsample, create_datasets
@@ -47,13 +47,13 @@ def main():
 
     # Step 3: Initialize model
     print("\n--- Step 3: Initializing model ---")
-    model = DeepKoopmanPaper(n_x=N_X, n_u=N_U, n_z=N_Z, n_w=N_W)
+    model = DeepKoopmanPaper(n_x=N_X, n_u=N_U, n_z=N_Z)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Model parameters: {n_params:,}")
     print(f"Architecture:")
     print(f"  Encoder: {N_X} -> 64 -> 128 -> 64 -> {N_Z}")
     print(f"  Decoder: {N_Z} -> 64 -> 32 -> {N_X}")
-    print(f"  Linear: A({N_Z}x{N_Z}), B({N_Z}x{N_U}), C({N_Z}x{N_W})")
+    print(f"  Linear: A({N_Z}x{N_Z}), B({N_Z}x{N_U})")
 
     # Step 4: Train
     print("\n--- Step 4: Training ---")
@@ -71,13 +71,12 @@ def main():
 
     # Step 6: Save Koopman matrices
     print("\n--- Step 6: Saving Koopman matrices ---")
-    A, B, C = model.get_matrices()
+    A, B = model.get_matrices()
     os.makedirs(MODEL_DIR, exist_ok=True)
     np.savez(os.path.join(MODEL_DIR, 'koopman_matrices.npz'),
-             A=A, B=B, C=C, D=D)
+             A=A, B=B, D=D)
     print(f"  A: {A.shape}, max|eig|={np.max(np.abs(np.linalg.eigvals(A))):.4f}")
     print(f"  B: {B.shape}")
-    print(f"  C: {C.shape}")
     print(f"  D: {D.shape}, R^2={r2.mean():.4f}")
 
     # Save normalization params in output

@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import THETA_WASSERSTEIN, EPSILON_CVAR, D_SAFE, VEHICLE_RADIUS
 
 
-def compute_cvar_margin(positions, obstacles, w_samples, C_matrix,
+def compute_cvar_margin(positions, obstacles, w_samples,
                         theta=THETA_WASSERSTEIN, epsilon=EPSILON_CVAR):
     """
     计算给定轨迹位置的最坏情况CVaR安全裕度。
@@ -30,7 +30,6 @@ def compute_cvar_margin(positions, obstacles, w_samples, C_matrix,
         positions: 形状为(T, 2)的预测位置数组，包含[px, py]（物理坐标）
         obstacles: 障碍物列表，格式为[(ox, oy, radius), ...]
         w_samples: 形状为(N, 5)的干扰样本数组
-        C_matrix: 形状为(nz, nw)的干扰矩阵
         theta: Wasserstein半径（模糊集大小）
         epsilon: CVaR风险水平（通常很小，如0.05或0.1）
 
@@ -43,8 +42,7 @@ def compute_cvar_margin(positions, obstacles, w_samples, C_matrix,
 
     N = len(w_samples)  # 获取干扰样本数量
 
-    # 预计算||C @ w_i||和||w_i||（范数），避免重复计算
-    Cw_norms = np.array([np.linalg.norm(C_matrix @ w_samples[i]) for i in range(N)])  # 计算每个样本经过C矩阵变换后的范数
+    # 预计算||w_i||（范数），避免重复计算
     w_norms = np.array([np.linalg.norm(w_samples[i]) for i in range(N)])  # 计算每个原始样本的范数
 
     cvar_per_obs = []  # 初始化每个障碍物的CVaR值列表
@@ -59,14 +57,10 @@ def compute_cvar_margin(positions, obstacles, w_samples, C_matrix,
             dist = np.sqrt((px - ox)**2 + (py - oy)**2)  # 计算车辆到障碍物中心的欧氏距离
             l_nom = d_min - dist  # 计算标称安全裕度（正数表示安全，负数表示碰撞）
 
-            # 每个样本的安全损失：l_i ≈ l_nom + ||C @ w_i||
-            # 干扰会减小安全裕度，所以加上干扰的影响
-            l_samples = l_nom + Cw_norms  # 计算所有样本的安全损失值
-
             # 对偶重构：寻找最优的lambda值
             def dual_objective(lam):
-                """对偶目标函数：lambda*theta + (1/epsilon)*E[max(l_i + lambda*||w_i||, 0)]"""
-                terms = np.maximum(l_samples + lam * w_norms, 0)  # 计算[l_i + lambda*||w_i||]_+
+                """对偶目标函数：lambda*theta + (1/epsilon)*E[max(l_nom + lambda*||w_i||, 0)]"""
+                terms = np.maximum(l_nom + lam * w_norms, 0)  # 计算[l_nom + lambda*||w_i||]_+
                 return lam * theta + np.mean(terms) / epsilon  # 返回对偶目标函数值
 
             # 使用标量优化器在[0, 100]范围内寻找最优lambda

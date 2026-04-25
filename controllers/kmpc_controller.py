@@ -89,7 +89,7 @@ class KMPCController:
 
         参数:
             koopman_model: 训练好的DeepKoopmanPaper模型
-                          包含编码器、解码器和Koopman矩阵A, B, C
+                          包含编码器、解码器和Koopman矩阵A, B
             D_matrix: numpy数组，形状为(2, n_z)
                      投影矩阵，用于从Koopman状态提取[v, omega]
             norm_params: 字典，包含归一化参数
@@ -112,8 +112,8 @@ class KMPCController:
         # 获取Koopman线性动力学矩阵
         # A: 状态转移矩阵 (n_z x n_z)
         # B: 控制矩阵 (n_z x n_u)
-        # C: 输出矩阵 (n_z x n_x)
-        self.A, self.B, self.C = koopman_model.get_matrices()
+        # B: 控制矩阵 (n_z x n_u)
+        self.A, self.B = koopman_model.get_matrices()
 
         # 保存投影矩阵D (2 x n_z)
         self.D = D_matrix

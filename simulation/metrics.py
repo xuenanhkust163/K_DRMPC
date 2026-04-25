@@ -13,8 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import D_SAFE, VEHICLE_RADIUS
 
 
-def compute_all_metrics(result, track, obstacles=None, w_samples=None,
-                        C_matrix=None):
+def compute_all_metrics(result, track, obstacles=None, w_samples=None):
     """
     计算仿真结果的所有性能指标。
 
@@ -23,8 +22,6 @@ def compute_all_metrics(result, track, obstacles=None, w_samples=None,
         track: BaseTrack实例，表示赛道对象
         obstacles: 障碍物列表，格式为[(ox, oy, radius), ...]
         w_samples: 用于计算CVaR的干扰样本
-        C_matrix: Koopman干扰矩阵
-
     Returns:
         metrics: 字典，包含所有计算得到的性能指标
     """
@@ -78,10 +75,10 @@ def compute_all_metrics(result, track, obstacles=None, w_samples=None,
     metrics['min_obstacle_clearance'] = min(min_obs_distances) if min_obs_distances else float('inf')  # 记录最小障碍物间隙
 
     # CVaR安全裕度（如果有干扰数据可用）
-    if w_samples is not None and C_matrix is not None:  # 如果提供了干扰样本和C矩阵
+    if w_samples is not None:  # 如果提供了干扰样本
         from disturbance.wasserstein import compute_cvar_margin  # 导入CVaR计算函数
         cvar, cvar_per_obs = compute_cvar_margin(
-            positions, obstacles, w_samples, C_matrix  # 计算条件风险价值（CVaR）安全裕度
+            positions, obstacles, w_samples  # 计算条件风险价值（CVaR）安全裕度
         )
         metrics['cvar_safety_margin'] = cvar  # 存储CVaR安全裕度
     else:

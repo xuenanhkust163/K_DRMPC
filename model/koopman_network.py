@@ -2,12 +2,12 @@
 论文精确的Deep Koopman网络架构。
 
 实现了论文第3.3节中描述的编码器-解码器结构，
-以及线性动力学矩阵A、B、C。
+以及线性动力学矩阵A、B。
 
 网络架构：
     编码器: x ∈ R^5 -> [64, 128, 64] -> z ∈ R^32 (ReLU激活函数)
     解码器: z ∈ R^32 -> [64, 32] -> x ∈ R^5 (ReLU激活函数)
-    线性动力学: z_{t+1} = A @ z_t + B @ u_t + C @ w_t
+    线性动力学: z_{t+1} = A @ z_t + B @ u_t
 
 Koopman算子理论：
     Koopman算子是一种无限维线性算子，可以精确描述非线性系统的演化。
@@ -38,7 +38,6 @@ class DeepKoopmanPaper(nn.Module):
         - 线性动力学矩阵:
           A ∈ R^{32x32}: 状态演化矩阵（自主动力学）
           B ∈ R^{32x2}:  控制输入矩阵（控制对系统的影响）
-          C ∈ R^{32x5}:  干扰矩阵（干扰对系统的影响）
 
         - 解码器psi: R^32 -> R^5
           MLP，2个隐藏层 [64, 32]
@@ -46,11 +45,11 @@ class DeepKoopmanPaper(nn.Module):
 
     前向过程:
         1. 编码: z_t = phi(x_t)
-        2. 线性演化: z_{t+1} = A @ z_t + B @ u_t + C @ w_t
+        2. 线性演化: z_{t+1} = A @ z_t + B @ u_t
         3. 解码: x_{t+1} = psi(z_{t+1})
     """
 
-    def __init__(self, n_x=5, n_u=2, n_z=32, n_w=5):
+    def __init__(self, n_x=5, n_u=2, n_z=32):
         """
         初始化Deep Koopman网络。
 
@@ -58,14 +57,12 @@ class DeepKoopmanPaper(nn.Module):
             n_x: 整数，物理状态维度，默认5 [px, py, v, psi, omega]
             n_u: 整数，控制输入维度，默认2 [a, delta]
             n_z: 整数，Koopman空间维度，默认32
-            n_w: 整数，干扰维度，默认5（与状态维度相同）
         """
         super().__init__()  # 调用父类nn.Module的初始化函数
         # 保存维度参数，供后续使用
         self.n_x = n_x  # 物理状态维度
         self.n_u = n_u  # 控制输入维度
         self.n_z = n_z  # Koopman空间维度
-        self.n_w = n_w  # 干扰维度
 
         # ============================================================
         # 编码器: x -> z （表1）
@@ -97,11 +94,10 @@ class DeepKoopmanPaper(nn.Module):
         # ============================================================
         # 线性动力学矩阵（第3.3.3节）
         # ============================================================
-        # Koopman空间的线性演化方程: z_{t+1} = A @ z_t + B @ u_t + C @ w_t
+        # Koopman空间的线性演化方程: z_{t+1} = A @ z_t + B @ u_t
         # 使用nn.Parameter使矩阵成为可训练参数
         self.A = nn.Parameter(torch.empty(n_z, n_z))  # 状态演化矩阵 32x32
         self.B = nn.Parameter(torch.empty(n_z, n_u))  # 控制输入矩阵 32x2
-        self.C = nn.Parameter(torch.empty(n_z, n_w))  # 干扰矩阵 32x5
 
         # 初始化网络权重和动力学矩阵
         self._init_weights()
@@ -114,7 +110,6 @@ class DeepKoopmanPaper(nn.Module):
         1. 编码器/解码器：使用Xavier初始化，保持方差稳定
         2. 矩阵A：初始化为单位矩阵+小噪声，确保初始稳定性
         3. 矩阵B：使用Xavier初始化
-        4. 矩阵C：初始化为很小的值，因为干扰影响应该较小
         """
         # 使用Xavier均匀分布初始化编码器和解码器的权重
         # Xavier初始化可以保持每层的输出方差一致，避免梯度消失/爆炸
@@ -129,10 +124,8 @@ class DeepKoopmanPaper(nn.Module):
         nn.init.eye_(self.A)  # 初始化为单位矩阵
         self.A.data += torch.randn_like(self.A) * 0.01  # 添加小噪声(标准差0.01)
 
-        # 使用Xavier初始化矩阵B和C
+        # 使用Xavier初始化矩阵B
         nn.init.xavier_uniform_(self.B)  # 控制输入矩阵
-        nn.init.xavier_uniform_(self.C)  # 干扰矩阵
-        self.C.data *= 0.01  # 将C缩小100倍，初始干扰影响很小
 
     def encode(self, x):
         """
@@ -169,22 +162,20 @@ class DeepKoopmanPaper(nn.Module):
         """
         return self.decoder(z)  # 通过解码器网络前向传播
 
-    def linear_step(self, z, u, w=None):
+    def linear_step(self, z, u):
         """
         Koopman空间中的线性动力学演化。
 
         实现线性状态转移方程：
-            z_{t+1} = A @ z_t + B @ u_t + C @ w_t
+            z_{t+1} = A @ z_t + B @ u_t
 
         这是Koopman理论的核心：在高维空间中使用线性模型
         描述非线性系统的演化。矩阵A捕获自主动力学，
-        B捕获控制输入的影响，C捕获外部干扰的影响。
+        B捕获控制输入的影响。
 
         参数:
             z: 形状为(batch, n_z)的张量，当前Koopman空间状态
             u: 形状为(batch, n_u)的张量，控制输入
-            w: 形状为(batch, n_w)的张量，干扰（可选，默认为零）
-
         返回:
             z_next: 形状为(batch, n_z)的张量，预测的下一时刻Koopman空间状态
         """
@@ -193,13 +184,10 @@ class DeepKoopmanPaper(nn.Module):
         # 数学上等价于对每个样本计算 A @ z_i
         z_next = z @ self.A.T + u @ self.B.T
 
-        # 如果提供了干扰，添加干扰项 C @ w_t
-        if w is not None:
-            z_next = z_next + w @ self.C.T
 
         return z_next
 
-    def forward(self, x, u, x_next=None, w=None):
+    def forward(self, x, u, x_next=None):
         """
         完整的前向传播，返回损失计算所需的所有中间变量。
 
@@ -214,8 +202,6 @@ class DeepKoopmanPaper(nn.Module):
             u: 形状为(batch, n_u)的张量，控制输入
             x_next: 形状为(batch, n_x)的张量，真实下一状态（可选）
                    如果提供，用于计算线性动力学损失
-            w: 形状为(batch, n_w)的张量，干扰（可选）
-
         返回:
             result: 字典，包含以下键：
                 'z': 编码后的当前状态 (batch, n_z)
@@ -233,8 +219,8 @@ class DeepKoopmanPaper(nn.Module):
         x_recon = self.decode(z)
 
         # 步骤3：在Koopman空间中进行线性动力学预测
-        # z_{t+1} = A @ z_t + B @ u_t + C @ w_t
-        z_next_linear = self.linear_step(z, u, w)
+        # z_{t+1} = A @ z_t + B @ u_t
+        z_next_linear = self.linear_step(z, u)
 
         # 步骤4：解码线性预测结果到物理空间
         # x_{t+1}_pred = psi(z_{t+1})
@@ -270,10 +256,10 @@ class DeepKoopmanPaper(nn.Module):
 
         预测过程：
             z_0 = phi(x_0)
-            z_1 = A @ z_0 + B @ u_0 + C @ w_0
-            z_2 = A @ z_1 + B @ u_1 + C @ w_1
+            z_1 = A @ z_0 + B @ u_0
+            z_2 = A @ z_1 + B @ u_1
             ...
-            z_K = A @ z_{K-1} + B @ u_{K-1} + C @ w_{K-1}
+            z_K = A @ z_{K-1} + B @ u_{K-1}
 
             x_k = psi(z_k), for k = 1, 2, ..., K
 
@@ -281,8 +267,6 @@ class DeepKoopmanPaper(nn.Module):
             x0: 形状为(batch, n_x)的张量，初始状态
             u_seq: 形状为(batch, K, n_u)的张量，控制序列
                   K是预测时域（步数）
-            w_seq: 形状为(batch, K, n_w)的张量，干扰序列（可选）
-
         返回:
             x_preds: 形状为(batch, K, n_x)的张量，预测的状态序列 t=1..K
             z_preds: 形状为(batch, K, n_z)的张量，预测的Koopman状态序列 t=1..K
@@ -300,11 +284,9 @@ class DeepKoopmanPaper(nn.Module):
         for k in range(K):
             # 提取第k步的控制输入
             u_k = u_seq[:, k, :]  # 形状: (batch, n_u)
-            # 提取第k步的干扰（如果提供）
-            w_k = w_seq[:, k, :] if w_seq is not None else None
 
-            # 线性动力学演化：z_{k+1} = A @ z_k + B @ u_k + C @ w_k
-            z = self.linear_step(z, u_k, w_k)
+            # 线性动力学演化：z_{k+1} = A @ z_k + B @ u_k
+            z = self.linear_step(z, u_k)
             # 解码到物理空间：x_{k+1} = psi(z_{k+1})
             x_pred = self.decode(z)
 
@@ -321,7 +303,7 @@ class DeepKoopmanPaper(nn.Module):
 
     def get_matrices(self):
         """
-        提取A、B、C矩阵为NumPy数组。
+        提取A、B矩阵为NumPy数组。
 
         该函数用于将训练好的动力学矩阵导出，
         以便在MPC控制器中使用。
@@ -329,13 +311,11 @@ class DeepKoopmanPaper(nn.Module):
         返回:
             A: numpy数组，形状(n_z, n_z)，状态演化矩阵
             B: numpy数组，形状(n_z, n_u)，控制输入矩阵
-            C: numpy数组，形状(n_z, n_w)，干扰矩阵
         """
         # 使用detach()从计算图中分离，然后转移到CPU并转换为NumPy
         A = self.A.detach().cpu().numpy()
         B = self.B.detach().cpu().numpy()
-        C = self.C.detach().cpu().numpy()
-        return A, B, C
+        return A, B
 
     def get_network_weights(self):
         """

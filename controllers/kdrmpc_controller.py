@@ -28,7 +28,7 @@ from config import (
     N_X,  # 物理状态维度，默认5 [px, py, v, psi, omega]
     N_U,  # 控制输入维度，默认2 [加速度a, 转向角delta]
     N_Z,  # Koopman空间维度，默认8
-    N_W,  # 干扰维度，默认5 [w_px, w_py, w_v, w_psi, w_omega]
+    N_W,  # 干扰维度，用于采样历史扰动
     T_HORIZON,  # 预测时域长度，默认20步
     DT,  # 时间步长，默认0.1秒
     Q_WEIGHTS,  # 状态跟踪权重向量
@@ -71,11 +71,9 @@ class KDRMPCController:
     带有CVaR约束的分布鲁棒Koopman MPC控制器。
 
     核心特性：
-    1. 带干扰的线性Koopman动力学: z_{t+1} = A*z + B*u + C*w
+    1. 线性Koopman动力学: z_{t+1} = A*z + B*u
        - A: 状态转移矩阵（学习得到）
        - B: 控制矩阵（学习得到）
-       - C: 干扰矩阵（学习得到）
-       - w: 干扰向量（不确定性来源）
 
     2. 以经验干扰分布为中心的Wasserstein模糊集
        - 模糊集: P ∈ {Q : W(P, P_N) <= theta}
@@ -93,7 +91,7 @@ class KDRMPCController:
         s.t.  z_{t+1} = A*z_t + B*u_t  (标称动力学)
               u_min <= u_t <= u_max
               CVaR约束: lambda*theta + (1/(epsilon*N))*Σs_i <= slack
-                        s_i >= l_nom + ||C*w_i|| + lambda*||w_i||
+                        s_i >= l_nom + lambda*||w_i||
     """
 
     def __init__(self, koopman_model, D_matrix, norm_params,
@@ -104,7 +102,7 @@ class KDRMPCController:
 
         参数:
             koopman_model: 训练好的DeepKoopmanPaper模型
-                          包含编码器、解码器和Koopman矩阵A, B, C
+                          包含编码器、解码器和Koopman矩阵A, B
             D_matrix: numpy数组，形状为(2, n_z)
                      投影矩阵，用于从Koopman状态提取[v, omega]
             norm_params: 字典，包含归一化参数
@@ -134,8 +132,7 @@ class KDRMPCController:
         # 获取Koopman线性动力学矩阵
         # A: 状态转移矩阵 (n_z x n_z)
         # B: 控制矩阵 (n_z x n_u)
-        # C_mat: 干扰矩阵 (n_z x n_w)，将干扰映射到Koopman空间
-        self.A, self.B, self.C_mat = koopman_model.get_matrices()
+        self.A, self.B = koopman_model.get_matrices()
 
         # 保存投影矩阵D (2 x n_z)
         self.D = D_matrix
@@ -181,13 +178,6 @@ class KDRMPCController:
         # ================================================================
         # 预计算CVaR约束所需的范数（提高优化效率）
         # ================================================================
-        # 预计算||C @ w_i||：干扰通过C矩阵映射后的范数
-        # 这表示干扰对Koopman状态的影响大小
-        self.Cw_norms = np.array([
-            np.linalg.norm(self.C_mat @ self.w_samples[i])
-            for i in range(self.N_samples)
-        ])
-
         # 预计算||w_i||：干扰本身的范数
         # 这用于Wasserstein距离的计算
         self.w_norms = np.array([
@@ -199,7 +189,6 @@ class KDRMPCController:
         # 这样可以在CasADi符号计算中直接使用
         self._A_ca = ca.DM(self.A)  # CasADi格式的A矩阵
         self._B_ca = ca.DM(self.B)  # CasADi格式的B矩阵
-        self._C_ca = ca.DM(self.C_mat)  # CasADi格式的C矩阵
         self._D_ca = ca.DM(self.D)  # CasADi格式的D矩阵
 
         # ================================================================
