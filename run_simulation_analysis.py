@@ -65,7 +65,7 @@ def parse_args():
     parser.add_argument(
         "--cost-profile",
         type=str,
-        choices=["default", "tracking-first", "progress-first"],
+        choices=["default", "tracking-first", "progress-first", "mpcc-paper", "mpcc-paper-cvar"],
         default="default",
         help="Pass through to run_simulation.py cost profile.",
     )

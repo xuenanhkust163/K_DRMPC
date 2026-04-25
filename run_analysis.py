@@ -6,6 +6,7 @@ import os
 import sys
 import json
 import glob
+from collections import Counter
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -36,6 +37,7 @@ def export_result_to_step_log(result, output_path):
     controls = data['controls']
     solve_times = data['solve_times']
     timestamps = data['timestamps']
+    solve_debug = list(data.get('solve_debug', []))
     ref_states = np.array(result.ref_states)
     solve_statuses = list(result.solve_statuses)
 
@@ -62,6 +64,7 @@ def export_result_to_step_log(result, output_path):
             ref_t = ref_states[step] if step < len(ref_states) else np.full(5, np.nan)
             solve_time_ms = solve_times[step] * 1000.0 if step < len(solve_times) else float('nan')
             status = solve_statuses[step] if step < len(solve_statuses) else 'unknown'
+            debug = solve_debug[step] if step < len(solve_debug) else None
             t_sim = timestamps[step] if step < len(timestamps) else float(step)
 
             f.write(
@@ -72,6 +75,15 @@ def export_result_to_step_log(result, output_path):
                 f"u=[{u_t[0]:.6f}, {u_t[1]:.6f}] "
                 f"x_next=[{x_next[0]:.6f}, {x_next[1]:.6f}, {x_next[2]:.6f}, {x_next[3]:.6f}, {x_next[4]:.6f}]\n"
             )
+            if debug:
+                step0 = debug.get('step0', {})
+                horizon = debug.get('horizon', {})
+                active = ','.join(debug.get('active_constraints', [])) or 'none'
+                f.write(
+                    f"  debug step0={step0} horizon={horizon} active={active} "
+                    f"v_slack_max={debug.get('v_slack_max', 0.0):.6f} "
+                    f"obs_slack_max={debug.get('obs_slack_max', 0.0):.6f}\n"
+                )
 
 
 def export_result_to_compact_log(result, output_path):
@@ -81,6 +93,7 @@ def export_result_to_compact_log(result, output_path):
     controls = data['controls']
     solve_times = data['solve_times']
     timestamps = data['timestamps']
+    solve_debug = list(data.get('solve_debug', []))
     ref_states = np.array(result.ref_states)
     solve_statuses = list(result.solve_statuses)
 
@@ -95,7 +108,19 @@ def export_result_to_compact_log(result, output_path):
             ref_t = ref_states[step] if step < len(ref_states) else np.full(5, np.nan)
             solve_time_ms = solve_times[step] * 1000.0 if step < len(solve_times) else float('nan')
             status = solve_statuses[step] if step < len(solve_statuses) else 'unknown'
+            debug = solve_debug[step] if step < len(solve_debug) else None
             t_sim = timestamps[step] if step < len(timestamps) else float(step)
+
+            diag_excerpt = ""
+            if debug:
+                step0 = debug.get('step0', {})
+                important = []
+                for key in ('cost_track_vomega', 'cost_contour', 'cost_lag', 'cost_progress', 'cost_cvar'):
+                    if key in step0:
+                        important.append(f"{key}={step0[key]:.3f}")
+                if 'horizon' in debug and 'cost_cvar' in debug['horizon']:
+                    important.append(f"cost_cvar={debug['horizon']['cost_cvar']:.3f}")
+                diag_excerpt = (" " + " ".join(important)) if important else ""
 
             f.write(
                 f"{step:04d} "
@@ -107,8 +132,90 @@ def export_result_to_compact_log(result, output_path):
                 f"{u_t[0]:9.4f} "
                 f"{u_t[1]:9.4f} "
                 f"{solve_time_ms:9.3f} "
-                f"{status}\n"
+                f"{status}{diag_excerpt}\n"
             )
+
+
+def summarize_debug_diagnostics(result, top_k=5):
+    """Summarize per-step debug diagnostics into dominant terms and active constraints."""
+    debug_rows = [row for row in getattr(result, 'solve_debug', []) if row]
+    if not debug_rows:
+        return None
+
+    step_acc = {}
+    horizon_acc = {}
+    active_counter = Counter()
+
+    for row in debug_rows:
+        for key, value in row.get('step0', {}).items():
+            if isinstance(value, (int, float)):
+                step_acc.setdefault(key, []).append(float(value))
+        for key, value in row.get('horizon', {}).items():
+            if isinstance(value, (int, float)):
+                horizon_acc.setdefault(key, []).append(float(value))
+        active_counter.update(row.get('active_constraints', []))
+
+    def build_stats(acc):
+        stats = {}
+        for key, values in acc.items():
+            if not values:
+                continue
+            stats[key] = {
+                'mean': float(np.mean(values)),
+                'max': float(np.max(values)),
+            }
+        return stats
+
+    step_stats = build_stats(step_acc)
+    horizon_stats = build_stats(horizon_acc)
+
+    dominant = sorted(
+        [
+            (key, vals['mean'])
+            for key, vals in step_stats.items()
+            if key.startswith('cost_')
+        ],
+        key=lambda item: item[1],
+        reverse=True,
+    )[:top_k]
+
+    return {
+        'step_stats': step_stats,
+        'horizon_stats': horizon_stats,
+        'dominant_costs': dominant,
+        'active_constraints': dict(active_counter.most_common()),
+    }
+
+
+def export_result_debug_summary(result, output_path, top_k=5):
+    """Export a concise debug summary for quick diagnosis."""
+    summary = summarize_debug_diagnostics(result, top_k=top_k)
+    if summary is None:
+        return False
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, 'w') as f:
+        f.write(f"method={result.method_name}\n")
+        f.write(f"track={result.track_name}\n")
+        f.write(f"total_steps={result.total_steps}\n\n")
+
+        f.write("[Top Dominant Cost Terms]\n")
+        for key, mean_val in summary['dominant_costs']:
+            max_val = summary['step_stats'][key]['max']
+            f.write(f"  {key}: mean={mean_val:.6f}, max={max_val:.6f}\n")
+
+        f.write("\n[Active Constraints Frequency]\n")
+        if summary['active_constraints']:
+            for key, count in summary['active_constraints'].items():
+                f.write(f"  {key}: {count}\n")
+        else:
+            f.write("  none\n")
+
+        f.write("\n[Horizon Diagnostics]\n")
+        for key, vals in sorted(summary['horizon_stats'].items()):
+            f.write(f"  {key}: mean={vals['mean']:.6f}, max={vals['max']:.6f}\n")
+
+    return True
 
 
 def export_all_result_logs(results_dir=RESULTS_DIR):
@@ -122,10 +229,14 @@ def export_all_result_logs(results_dir=RESULTS_DIR):
         base_name = os.path.splitext(os.path.basename(pkl_path))[0]
         log_path = os.path.join(log_dir, f"{base_name}.log")
         compact_log_path = os.path.join(log_dir, f"{base_name}.compact.log")
+        debug_summary_path = os.path.join(log_dir, f"{base_name}.debug_summary.log")
         export_result_to_step_log(result, log_path)
         export_result_to_compact_log(result, compact_log_path)
+        exported_debug_summary = export_result_debug_summary(result, debug_summary_path)
         print(f"  Step log exported: {log_path}")
         print(f"  Compact log exported: {compact_log_path}")
+        if exported_debug_summary:
+            print(f"  Debug summary exported: {debug_summary_path}")
 
 
 def load_results(track_name, methods=None):
@@ -157,6 +268,9 @@ def analyze_track(track, track_name, results, w_samples=None):
             result, track, obstacles,
             w_samples=w_samples
         )
+        debug_summary = summarize_debug_diagnostics(result)
+        if debug_summary:
+            metrics['debug_summary'] = debug_summary
         all_metrics[method] = metrics
 
     return all_metrics
@@ -217,6 +331,22 @@ def main():
             feasible = lusail_short_metrics[m].get('real_time_feasible', False)
             print(f"  {m:<12}: mean={mean_t:.1f}ms, max={max_t:.1f}ms, "
                   f"RT feasible={'Yes' if feasible else 'No'}")
+
+        print(f"\nDebug Summary: Lusail Short Circuit")
+        print("-" * 60)
+        for m in avail_methods:
+            summary = lusail_short_metrics[m].get('debug_summary')
+            if not summary:
+                continue
+            dominant = ", ".join(
+                f"{key}={mean_val:.3f}"
+                for key, mean_val in summary['dominant_costs'][:3]
+            ) or "none"
+            active = ", ".join(
+                f"{key}:{count}"
+                for key, count in list(summary['active_constraints'].items())[:4]
+            ) or "none"
+            print(f"  {m:<12}: dominant=[{dominant}] active=[{active}]")
 
         # Figure 6: Trajectories
         plot_trajectory_comparison(

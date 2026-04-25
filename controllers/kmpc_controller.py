@@ -335,6 +335,9 @@ class KMPCController:
             for t in range(T)
         ])
 
+        # 可选的风险项容器：某些builder会在其中追加每步损失用于CVaR等尾部项
+        risk_terms = []
+
         # 遍历预测时域，累加每一步的代价（由可替换cost builder计算）
         for t in range(T):
             y_t = ca.mtimes(self._D_vomega_ca, Z[t])
@@ -359,7 +362,15 @@ class KMPCController:
                 q_progress=Q_PROGRESS,
                 q_pos=Q_pos,
                 add_position_term=(t % 4 == 0),
+                risk_terms=risk_terms,
             )
+
+        # 可选的时域级代价（例如CVaR尾部风险）
+        cost += self.cost_builder.finalize_cost(
+            opti=opti,
+            horizon=T,
+            risk_terms=risk_terms,
+        )
 
         # ================================================================
         # 步骤6：添加约束

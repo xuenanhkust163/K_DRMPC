@@ -13,6 +13,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import FIGURES_DIR, FIGURE_DPI, FIGURE_FORMAT
+from visualization.plot_utils import add_figure_timestamp
 
 
 def plot_tsne_latent_space(model, X_data, filename=None, save_dir=FIGURES_DIR,
@@ -101,6 +102,7 @@ def plot_tsne_latent_space(model, X_data, filename=None, save_dir=FIGURES_DIR,
     axes[1].set_title('Latent Space (Colored by Velocity)', fontsize=13)
 
     plt.tight_layout()
+    add_figure_timestamp(fig)
 
     if filename is None:
         filename = f"fig5_tsne.{FIGURE_FORMAT}"

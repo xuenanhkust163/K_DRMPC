@@ -16,6 +16,7 @@ from config import (
     METHOD_COLORS, METHOD_LABELS, FIGURES_DIR,
     FIGURE_DPI, FIGURE_FORMAT, D_SAFE, VEHICLE_RADIUS
 )
+from visualization.plot_utils import add_figure_timestamp
 
 
 def plot_trajectory_comparison(results, track, title="Trajectory Comparison",
@@ -71,6 +72,7 @@ def plot_trajectory_comparison(results, track, title="Trajectory Comparison",
     ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
+    add_figure_timestamp(fig)
 
     if filename is None:
         filename = f"trajectory_{track.__class__.__name__}.{FIGURE_FORMAT}"
@@ -112,6 +114,7 @@ def plot_state_comparison(results, track, filename=None, save_dir=FIGURES_DIR):
     fig.suptitle(f'State Evolution: {track.__class__.__name__}', fontsize=14)
 
     plt.tight_layout()
+    add_figure_timestamp(fig)
 
     if filename is None:
         filename = f"states_{track.__class__.__name__}.{FIGURE_FORMAT}"
@@ -151,6 +154,7 @@ def plot_control_comparison(results, filename=None, save_dir=FIGURES_DIR):
     fig.suptitle('Control Input Comparison', fontsize=14)
 
     plt.tight_layout()
+    add_figure_timestamp(fig)
 
     if filename is None:
         filename = f"controls.{FIGURE_FORMAT}"

@@ -73,7 +73,13 @@ ENABLE_ORIGINAL_LUSAIL_TRACK = False
 ENABLE_DETAILED_STEP_LOG = True
 # 逐步详细日志最大步数（None表示打印全程每一步）
 DETAILED_STEP_LOG_MAX_STEPS = None
-COST_PROFILE_CHOICES = ("default", "tracking-first", "progress-first")
+COST_PROFILE_CHOICES = (
+    "default",
+    "tracking-first",
+    "progress-first",
+    "mpcc-paper",
+    "mpcc-paper-cvar",
+)
 
 
 def parse_cli_args():

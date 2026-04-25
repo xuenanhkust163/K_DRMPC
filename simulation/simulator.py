@@ -37,6 +37,7 @@ class SimResult:
         self.controls = []         # 控制输入列表，每个元素是形状为(2,)的控制向量
         self.solve_times = []      # MPC求解时间列表
         self.solve_statuses = []   # 求解器状态/返回值列表
+        self.solve_debug = []      # 每步求解透视日志（cost分项/活跃约束等）
         self.ref_states = []       # 参考状态列表
         self.timestamps = []       # 仿真时间戳列表
         self.lap_completed = False  # 标志位，表示是否完成了一圈
@@ -50,6 +51,7 @@ class SimResult:
             'controls': np.array(self.controls),  # 将所有控制输入转换为二维数组
             'solve_times': np.array(self.solve_times),  # 将求解时间转换为一维数组
             'timestamps': np.array(self.timestamps),  # 将时间戳转换为一维数组
+            'solve_debug': list(self.solve_debug),
         }
 
 
@@ -171,6 +173,7 @@ class Simulator:
             result.controls.append(u_opt.copy())  # 保存控制输入
             result.solve_times.append(info.get('solve_time', 0))  # 保存求解时间，默认为0
             result.solve_statuses.append(info.get('status', 'unknown'))  # 保存求解状态，默认为'unknown'
+            result.solve_debug.append(info.get('debug'))
             result.ref_states.append(ref[0].copy())  # 保存第一个参考状态
             result.timestamps.append(t_sim)  # 保存当前时间戳
 
@@ -198,6 +201,28 @@ class Simulator:
                     f"  solve  = status={info.get('status','unknown')} "
                     f"time={info.get('solve_time', 0.0) * 1000:.2f}ms"
                 )
+                debug = info.get('debug')
+                if debug:
+                    step0 = debug.get('step0', {})
+                    horizon = debug.get('horizon', {})
+                    active = ','.join(debug.get('active_constraints', [])) or 'none'
+                    key_parts = []
+                    for key in (
+                        'cost_track_vomega', 'cost_contour', 'cost_lag',
+                        'cost_heading', 'cost_heading_mpcc', 'cost_speed',
+                        'cost_progress', 'cost_progress_mpcc', 'cost_du',
+                        'cost_abs_u'
+                    ):
+                        if key in step0:
+                            key_parts.append(f"{key}={step0[key]:.3f}")
+                    if 'cost_cvar' in horizon:
+                        key_parts.append(f"cost_cvar={horizon['cost_cvar']:.3f}")
+                    if 'risk_eta' in horizon:
+                        key_parts.append(f"risk_eta={horizon['risk_eta']:.3f}")
+                    key_parts.append(f"v_slack_max={debug.get('v_slack_max', 0.0):.3f}")
+                    key_parts.append(f"obs_slack_max={debug.get('obs_slack_max', 0.0):.3f}")
+                    print(f"  diag   = {'; '.join(key_parts)}")
+                    print(f"  active = {active}")
                 print(f"  noise  = {noise_str}")
                 print(f"  x_next = {x_next_str}")
                 print(

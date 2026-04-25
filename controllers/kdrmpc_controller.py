@@ -367,6 +367,9 @@ class KDRMPCController:
             floor_ratio=MIN_SPEED_REF_RATIO,
         )
 
+        risk_terms = []
+        diag_terms = {}
+
         for t in range(T):
             y_t = ca.vertcat(
                 ca.mtimes(self._E_ca, Z[t]),
@@ -397,7 +400,43 @@ class KDRMPCController:
                 r_abs=R_abs,
                 min_speed_rule=min_speed_rule,
                 v_slack_t=v_slack[t],
+                risk_terms=risk_terms,
             )
+            self.cost_builder.collect_stage_diagnostics(
+                diag_terms,
+                opti=opti,
+                t=t,
+                z_t=Z[t],
+                u_t=U[:, t],
+                u_prev=ca.DM(self.u_prev),
+                u_prev_step=(U[:, t - 1] if t > 0 else None),
+                y_t=y_t,
+                y_ref_t=y_ref_t,
+                ref_psi_t=float(ref_psi[t]),
+                ref_px_norm_t=float(ref_px_norm[t]),
+                ref_py_norm_t=float(ref_py_norm[t]),
+                d_pos_ca=self._D_pos_ca,
+                d_psi_ca=self._D_psi_ca,
+                q=Q,
+                r=R,
+                q_psi=Q_PSI,
+                q_progress=Q_PROGRESS,
+                q_pos=Q_pos,
+                add_position_term=(t % 4 == 0),
+                add_abs_u_term=True,
+                r_abs=R_abs,
+                min_speed_rule=min_speed_rule,
+                v_slack_t=v_slack[t],
+                risk_terms=risk_terms,
+            )
+
+        # 可选的时域级代价（例如CVaR尾部风险）
+        cost += self.cost_builder.finalize_cost(
+            opti=opti,
+            horizon=T,
+            risk_terms=risk_terms,
+            diag_terms=diag_terms,
+        )
 
         # === Input Constraints ===
         for t in range(T):
@@ -472,6 +511,8 @@ class KDRMPCController:
                         <= obs_slack[obs_slack_idx]
                     )
                     obs_slack_idx += 1
+                else:
+                    obs_slack = None
 
         opti.minimize(cost)
 
@@ -499,6 +540,14 @@ class KDRMPCController:
             sol = opti.solve()
             u_opt = np.array(sol.value(U[:, 0])).flatten()
             status = "optimal"
+            debug_info = self._build_debug_info(
+                sol=sol,
+                U=U,
+                T=T,
+                diag_terms=diag_terms,
+                v_slack=v_slack,
+                obs_slack=obs_slack,
+            )
 
             # Store warm start
             self._warm_start = {'U': sol.value(U)}
@@ -510,9 +559,11 @@ class KDRMPCController:
                 u_opt[0] = np.clip(u_opt[0], A_MIN, A_MAX)
                 u_opt[1] = np.clip(u_opt[1], -DELTA_MAX, DELTA_MAX)
                 status = "suboptimal"
+                debug_info = None
             except Exception:
                 u_opt = self.u_prev.copy()
                 status = f"failed: {str(e)[:50]}"
+                debug_info = None
 
         solve_time = time.time() - t_start
         self.u_prev = u_opt.copy()
@@ -523,7 +574,54 @@ class KDRMPCController:
             'method': self.name,
             'theta': self.theta,
             'epsilon': self.epsilon,
+            'debug': debug_info,
         }
+
+    def _build_debug_info(self, sol, U, T, diag_terms, v_slack, obs_slack):
+        """Build numeric debug diagnostics from symbolic expressions and solver solution."""
+        u_seq = sol.value(U)
+        v_slack_vals = sol.value(v_slack) if v_slack is not None else None
+        obs_slack_vals = sol.value(obs_slack) if obs_slack is not None else None
+
+        step_terms = {}
+        horizon_terms = {}
+        for name, expr in diag_terms.items():
+            if isinstance(expr, list):
+                values = [float(sol.value(item)) for item in expr]
+                step_terms[name] = values
+            else:
+                horizon_terms[name] = float(sol.value(expr))
+
+        tol = 1e-3
+        active = []
+        if abs(float(u_seq[0, 0]) - A_MIN) < tol:
+            active.append("a_min")
+        if abs(float(u_seq[0, 0]) - A_MAX) < tol:
+            active.append("a_max")
+        if abs(float(u_seq[1, 0]) + DELTA_MAX) < tol:
+            active.append("delta_min")
+        if abs(float(u_seq[1, 0]) - DELTA_MAX) < tol:
+            active.append("delta_max")
+        delta_rate0 = float(u_seq[1, 0] - self.u_prev[1])
+        if abs(delta_rate0 + DELTA_RATE_MAX * DT) < tol:
+            active.append("delta_rate_min")
+        if abs(delta_rate0 - DELTA_RATE_MAX * DT) < tol:
+            active.append("delta_rate_max")
+        if v_slack_vals is not None and float(np.max(v_slack_vals)) > 1e-6:
+            active.append("speed_floor_slack")
+        if obs_slack_vals is not None and float(np.max(obs_slack_vals)) > 1e-6:
+            active.append("obs_cvar_slack")
+
+        step0 = {name: values[0] for name, values in step_terms.items() if values}
+        summary = {
+            'step0': step0,
+            'horizon': horizon_terms,
+            'active_constraints': active,
+            'u0': [float(u_seq[0, 0]), float(u_seq[1, 0])],
+            'v_slack_max': float(np.max(v_slack_vals)) if v_slack_vals is not None else 0.0,
+            'obs_slack_max': float(np.max(obs_slack_vals)) if obs_slack_vals is not None else 0.0,
+        }
+        return summary
 
     def update_disturbance_samples(self, new_samples):
         """Update the disturbance sample set (e.g., from online data)."""
