@@ -7,13 +7,14 @@ import time  # 导入时间模块，用于计时
 import os  # 导入操作系统接口模块
 import sys  # 导入系统模块，用于路径操作
 import pickle  # 导入pickle模块，用于对象的序列化和反序列化
+from collections import Counter
 
 # 将父目录添加到系统路径，以便导入项目模块
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # 从配置文件导入常量和参数
 from config import (
     DT, MAX_SIM_STEPS, V_MIN, V_MAX, A_MIN, A_MAX,
-    DELTA_MAX, RESULTS_DIR,
+    DELTA_MAX, RESULTS_DIR, FIGURES_DIR,
     IDX_PX, IDX_PY, IDX_PSI, IDX_V, IDX_OMEGA
 )
 # 从自行车模型模块导入离散时间步长函数
@@ -264,6 +265,246 @@ class Simulator:
         return result  # 返回包含所有仿真结果的对象
 
     @staticmethod
+    def _export_result_to_step_log(result, output_path):
+        """Export a simulation result to a readable step-by-step text log."""
+        data = result.to_arrays()
+        states = data['states']
+        controls = data['controls']
+        solve_times = data['solve_times']
+        timestamps = data['timestamps']
+        solve_debug = list(data.get('solve_debug', []))
+        ref_states = np.array(result.ref_states)
+        solve_statuses = list(result.solve_statuses)
+
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+        with open(output_path, 'w') as f:
+            f.write(f"method={result.method_name}\n")
+            f.write(f"track={result.track_name}\n")
+            f.write(f"lap_completed={result.lap_completed}\n")
+            f.write(f"lap_time={result.lap_time}\n")
+            f.write(f"total_steps={result.total_steps}\n\n")
+
+            if len(states) > 0:
+                f.write(
+                    "init "
+                    f"x=[{states[0, 0]:.6f}, {states[0, 1]:.6f}, {states[0, 2]:.6f}, {states[0, 3]:.6f}, {states[0, 4]:.6f}]\n"
+                )
+
+            for step in range(len(controls)):
+                x_t = states[step]
+                x_next = states[step + 1]
+                u_t = controls[step]
+                ref_t = ref_states[step] if step < len(ref_states) else np.full(5, np.nan)
+                solve_time_ms = solve_times[step] * 1000.0 if step < len(solve_times) else float('nan')
+                status = solve_statuses[step] if step < len(solve_statuses) else 'unknown'
+                debug = solve_debug[step] if step < len(solve_debug) else None
+                t_sim = timestamps[step] if step < len(timestamps) else float(step)
+
+                f.write(
+                    f"step={step:04d} t={t_sim:8.3f}s "
+                    f"status={status} solve_ms={solve_time_ms:8.3f} "
+                    f"x=[{x_t[0]:.6f}, {x_t[1]:.6f}, {x_t[2]:.6f}, {x_t[3]:.6f}, {x_t[4]:.6f}] "
+                    f"ref=[{ref_t[0]:.6f}, {ref_t[1]:.6f}, {ref_t[2]:.6f}, {ref_t[3]:.6f}, {ref_t[4]:.6f}] "
+                    f"u=[{u_t[0]:.6f}, {u_t[1]:.6f}] "
+                    f"x_next=[{x_next[0]:.6f}, {x_next[1]:.6f}, {x_next[2]:.6f}, {x_next[3]:.6f}, {x_next[4]:.6f}]\n"
+                )
+                if debug:
+                    step0 = debug.get('step0', {})
+                    horizon = debug.get('horizon', {})
+                    active = ','.join(debug.get('active_constraints', [])) or 'none'
+                    f.write(
+                        f"  debug step0={step0} horizon={horizon} active={active} "
+                        f"v_slack_max={debug.get('v_slack_max', 0.0):.6f} "
+                        f"obs_slack_max={debug.get('obs_slack_max', 0.0):.6f}\n"
+                    )
+
+    @staticmethod
+    def _export_result_to_compact_log(result, output_path):
+        """Export a compact one-line-per-step log for quick inspection."""
+        data = result.to_arrays()
+        states = data['states']
+        controls = data['controls']
+        solve_times = data['solve_times']
+        timestamps = data['timestamps']
+        solve_debug = list(data.get('solve_debug', []))
+        ref_states = np.array(result.ref_states)
+        solve_statuses = list(result.solve_statuses)
+
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+        with open(output_path, 'w') as f:
+            f.write("# step t(s) v ref_v omega ref_omega a delta solve_ms status\n")
+
+            for step in range(len(controls)):
+                x_t = states[step]
+                u_t = controls[step]
+                ref_t = ref_states[step] if step < len(ref_states) else np.full(5, np.nan)
+                solve_time_ms = solve_times[step] * 1000.0 if step < len(solve_times) else float('nan')
+                status = solve_statuses[step] if step < len(solve_statuses) else 'unknown'
+                debug = solve_debug[step] if step < len(solve_debug) else None
+                t_sim = timestamps[step] if step < len(timestamps) else float(step)
+
+                diag_excerpt = ""
+                if debug:
+                    step0 = debug.get('step0', {})
+                    important = []
+                    for key in ('cost_track_vomega', 'cost_contour', 'cost_lag', 'cost_progress', 'cost_cvar'):
+                        if key in step0:
+                            important.append(f"{key}={step0[key]:.3f}")
+                    if 'horizon' in debug and 'cost_cvar' in debug['horizon']:
+                        important.append(f"cost_cvar={debug['horizon']['cost_cvar']:.3f}")
+                    diag_excerpt = (" " + " ".join(important)) if important else ""
+
+                f.write(
+                    f"{step:04d} "
+                    f"{t_sim:8.3f} "
+                    f"{x_t[3]:9.4f} "
+                    f"{ref_t[3]:9.4f} "
+                    f"{x_t[4]:9.4f} "
+                    f"{ref_t[4]:9.4f} "
+                    f"{u_t[0]:9.4f} "
+                    f"{u_t[1]:9.4f} "
+                    f"{solve_time_ms:9.3f} "
+                    f"{status}{diag_excerpt}\n"
+                )
+
+    @staticmethod
+    def _summarize_debug_diagnostics(result, top_k=5):
+        """Summarize per-step debug diagnostics into dominant terms and active constraints."""
+        debug_rows = [row for row in getattr(result, 'solve_debug', []) if row]
+        if not debug_rows:
+            return None
+
+        step_acc = {}
+        horizon_acc = {}
+        active_counter = Counter()
+
+        for row in debug_rows:
+            for key, value in row.get('step0', {}).items():
+                if isinstance(value, (int, float)):
+                    step_acc.setdefault(key, []).append(float(value))
+            for key, value in row.get('horizon', {}).items():
+                if isinstance(value, (int, float)):
+                    horizon_acc.setdefault(key, []).append(float(value))
+            active_counter.update(row.get('active_constraints', []))
+
+        def build_stats(acc):
+            stats = {}
+            for key, values in acc.items():
+                if values:
+                    stats[key] = {
+                        'mean': float(np.mean(values)),
+                        'max': float(np.max(values)),
+                    }
+            return stats
+
+        step_stats = build_stats(step_acc)
+        horizon_stats = build_stats(horizon_acc)
+        dominant = sorted(
+            [
+                (key, vals['mean'])
+                for key, vals in step_stats.items()
+                if key.startswith('cost_')
+            ],
+            key=lambda item: item[1],
+            reverse=True,
+        )[:top_k]
+
+        return {
+            'step_stats': step_stats,
+            'horizon_stats': horizon_stats,
+            'dominant_costs': dominant,
+            'active_constraints': dict(active_counter.most_common()),
+        }
+
+    @staticmethod
+    def _export_result_debug_summary(result, output_path, top_k=5):
+        """Export a concise debug summary for quick diagnosis."""
+        summary = Simulator._summarize_debug_diagnostics(result, top_k=top_k)
+        if summary is None:
+            return False
+
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        with open(output_path, 'w') as f:
+            f.write(f"method={result.method_name}\n")
+            f.write(f"track={result.track_name}\n")
+            f.write(f"total_steps={result.total_steps}\n\n")
+
+            f.write("[Top Dominant Cost Terms]\n")
+            for key, mean_val in summary['dominant_costs']:
+                max_val = summary['step_stats'][key]['max']
+                f.write(f"  {key}: mean={mean_val:.6f}, max={max_val:.6f}\n")
+
+            f.write("\n[Active Constraints Frequency]\n")
+            if summary['active_constraints']:
+                for key, count in summary['active_constraints'].items():
+                    f.write(f"  {key}: {count}\n")
+            else:
+                f.write("  none\n")
+
+            f.write("\n[Horizon Diagnostics]\n")
+            for key, vals in sorted(summary['horizon_stats'].items()):
+                f.write(f"  {key}: mean={vals['mean']:.6f}, max={vals['max']:.6f}\n")
+
+        return True
+
+    @staticmethod
+    def _build_track_for_result(result):
+        """Reconstruct a track instance from the saved result metadata."""
+        track_name = result.track_name
+        if track_name == 'LusailShortTrack':
+            from tracks.lusail_short_track import LusailShortTrack
+            return LusailShortTrack()
+        if track_name == 'LusailTrack':
+            from tracks.lusail_track import LusailTrack
+            return LusailTrack()
+        if track_name == 'CustomWindingTrack':
+            from tracks.custom_track import CustomWindingTrack
+            return CustomWindingTrack()
+        return None
+
+    @staticmethod
+    def _export_result_figures(result, base_name):
+        """Export per-result PDF figures and return created paths."""
+        track = Simulator._build_track_for_result(result)
+        if track is None:
+            return []
+
+        from visualization.plot_trajectories import (
+            plot_trajectory_comparison,
+            plot_state_comparison,
+            plot_control_comparison,
+        )
+
+        results = {result.method_name: result}
+        trajectory_name = f"{base_name}_trajectory.pdf"
+        states_name = f"{base_name}_states.pdf"
+        controls_name = f"{base_name}_controls.pdf"
+
+        plot_trajectory_comparison(
+            results,
+            track,
+            title=f"{result.method_name} Trajectory on {result.track_name}",
+            filename=trajectory_name,
+        )
+        plot_state_comparison(
+            results,
+            track,
+            filename=states_name,
+        )
+        plot_control_comparison(
+            results,
+            filename=controls_name,
+        )
+
+        return [
+            os.path.join(FIGURES_DIR, trajectory_name),
+            os.path.join(FIGURES_DIR, states_name),
+            os.path.join(FIGURES_DIR, controls_name),
+        ]
+
+    @staticmethod
     def save_result(result, filename=None, save_dir=RESULTS_DIR):
         """
         将仿真结果保存到磁盘。
@@ -279,7 +520,22 @@ class Simulator:
         path = os.path.join(save_dir, filename)  # 拼接完整路径
         with open(path, 'wb') as f:
             pickle.dump(result, f)  # 使用pickle序列化并保存结果对象
+        base_name = os.path.splitext(os.path.basename(path))[0]
+        log_dir = os.path.join(save_dir, 'logs')
+        step_log_path = os.path.join(log_dir, f"{base_name}.log")
+        compact_log_path = os.path.join(log_dir, f"{base_name}.compact.log")
+        debug_summary_path = os.path.join(log_dir, f"{base_name}.debug_summary.log")
+        Simulator._export_result_to_step_log(result, step_log_path)
+        Simulator._export_result_to_compact_log(result, compact_log_path)
+        exported_debug_summary = Simulator._export_result_debug_summary(result, debug_summary_path)
+        figure_paths = Simulator._export_result_figures(result, base_name)
         print(f"结果已保存到 {path}")
+        print(f"报表链接: {step_log_path}")
+        print(f"报表链接: {compact_log_path}")
+        if exported_debug_summary:
+            print(f"报表链接: {debug_summary_path}")
+        for figure_path in figure_paths:
+            print(f"图片链接: {figure_path}")
 
     @staticmethod
     def load_result(filepath):

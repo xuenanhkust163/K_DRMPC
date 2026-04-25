@@ -14,9 +14,23 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import (
     METHOD_COLORS, METHOD_LABELS, FIGURES_DIR,
-    FIGURE_DPI, FIGURE_FORMAT, D_SAFE, VEHICLE_RADIUS
+    FIGURE_DPI, FIGURE_FORMAT, D_SAFE, VEHICLE_RADIUS,
+    PLOT_TRACK_HALF_WIDTH
 )
 from visualization.plot_utils import add_figure_timestamp
+
+
+def _compute_track_boundaries(track, half_width=PLOT_TRACK_HALF_WIDTH):
+    """Build left/right track boundaries from centerline and heading."""
+    cx, cy = track.get_centerline()
+    heading = track.get_heading()
+    nx = -np.sin(heading)
+    ny = np.cos(heading)
+    left_x = cx + half_width * nx
+    left_y = cy + half_width * ny
+    right_x = cx - half_width * nx
+    right_y = cy - half_width * ny
+    return (left_x, left_y), (right_x, right_y)
 
 
 def plot_trajectory_comparison(results, track, title="Trajectory Comparison",
@@ -37,6 +51,10 @@ def plot_trajectory_comparison(results, track, title="Trajectory Comparison",
 
     # Plot track centerline
     cx, cy = track.get_centerline()
+    (left_x, left_y), (right_x, right_y) = _compute_track_boundaries(track)
+    ax.plot(left_x, left_y, '-', color='#444444', linewidth=1.2, alpha=0.8,
+            label='Track boundary')
+    ax.plot(right_x, right_y, '-', color='#444444', linewidth=1.2, alpha=0.8)
     ax.plot(cx, cy, '--', color='gray', linewidth=1.5, alpha=0.6, label='Track centerline')
 
     # Plot obstacles

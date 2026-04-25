@@ -5,7 +5,10 @@ Abstract base class for track definitions.
 import numpy as np
 from abc import ABC, abstractmethod
 from scipy.interpolate import CubicSpline
-from config import IDX_PX, IDX_PY, IDX_PSI, IDX_V, IDX_OMEGA
+from config import (
+    IDX_PX, IDX_PY, IDX_PSI, IDX_V, IDX_OMEGA,
+    A_LAT_MAX, V_MAX, REF_SPEED_SCALE,
+)
 
 
 class BaseTrack(ABC):
@@ -78,7 +81,7 @@ class BaseTrack(ABC):
         return idx, self._arc_length[idx], lateral_error
 
     def get_reference_trajectory(self, start_idx, horizon, v_ref=None,
-                                 a_lat_max=4.0, v_max=40.0):
+                                 a_lat_max=A_LAT_MAX, v_max=V_MAX):
         """
         Generate reference trajectory for MPC.
 
@@ -104,17 +107,17 @@ class BaseTrack(ABC):
             # Speed from curvature
             kappa = abs(self._curvature[idx])
             if v_ref is not None:
-                ref[t, IDX_V] = v_ref
+                ref[t, IDX_V] = REF_SPEED_SCALE * v_ref
             elif kappa > 1e-6:
-                ref[t, IDX_V] = min(v_max, np.sqrt(a_lat_max / kappa))
+                ref[t, IDX_V] = REF_SPEED_SCALE * min(v_max, np.sqrt(a_lat_max / kappa))
             else:
-                ref[t, IDX_V] = v_max
+                ref[t, IDX_V] = REF_SPEED_SCALE * v_max
 
             ref[t, IDX_OMEGA] = ref[t, IDX_V] * self._curvature[idx]  # omega = v * kappa
 
         return ref
 
-    def get_reference_v_omega(self, start_idx, horizon, a_lat_max=4.0, v_max=40.0):
+    def get_reference_v_omega(self, start_idx, horizon, a_lat_max=A_LAT_MAX, v_max=V_MAX):
         """
         Get reference [v, omega] trajectory for Koopman MPC cost.
 

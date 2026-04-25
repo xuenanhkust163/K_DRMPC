@@ -50,6 +50,8 @@ class DefaultTrackingCostBuilder:
         r_abs=None,
         min_speed_rule: Optional[MinSpeedRule] = None,
         v_slack_t=None,
+        risk_terms=None,
+        **_extra,
     ):
         """Return stage cost term and add optional soft constraints to opti."""
         stage = 0
