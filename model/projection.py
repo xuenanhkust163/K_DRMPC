@@ -36,6 +36,36 @@ from config import (
 )
 
 
+def get_fixed_selector_matrices(n_z=N_Z):
+    """
+    构建论文控制段使用的固定线性选择器（非学习）。
+
+    约定潜在状态前5维与物理状态同序对应：
+        z[0:5] <-> [px, py, psi, v, omega]
+
+    返回:
+        D_pos: (2, n_z), 提取 [px, py]
+        E_v:   (1, n_z), 提取 [v]
+        F_omg: (1, n_z), 提取 [omega]
+        D_vomg:(2, n_z), 提取 [v, omega]
+    """
+    D_pos = np.zeros((2, n_z))
+    D_pos[0, 0] = 1.0  # px
+    D_pos[1, 1] = 1.0  # py
+
+    E_v = np.zeros((1, n_z))
+    E_v[0, IDX_V] = 1.0
+
+    F_omg = np.zeros((1, n_z))
+    F_omg[0, IDX_OMEGA] = 1.0
+
+    D_vomg = np.zeros((2, n_z))
+    D_vomg[0, IDX_V] = 1.0
+    D_vomg[1, IDX_OMEGA] = 1.0
+
+    return D_pos, E_v, F_omg, D_vomg
+
+
 def compute_projection_matrix(model, X_data, gamma=GAMMA_RIDGE, device='cpu'):
     """
     通过岭回归计算投影矩阵D。

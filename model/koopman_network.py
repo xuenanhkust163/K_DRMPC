@@ -4,9 +4,11 @@
 实现了论文第3.3节中描述的编码器-解码器结构，
 以及线性动力学矩阵A、B。
 
-网络架构：
-    编码器: x ∈ R^5 -> [64, 128, 64] -> z ∈ R^32 (ReLU激活函数)
-    解码器: z ∈ R^32 -> [64, 32] -> x ∈ R^5 (ReLU激活函数)
+网络架构（直进直出线性版）：
+    编码器: x ∈ R^5 -> z ∈ R^32
+        z = [x, Lx]（线性映射，前5维为状态直通）
+    解码器: z ∈ R^32 -> x ∈ R^5
+        x_hat = z[0:5]（直接线性选择）
     线性动力学: z_{t+1} = A @ z_t + B @ u_t
 
 Koopman算子理论：
@@ -64,32 +66,12 @@ class DeepKoopmanPaper(nn.Module):
         self.n_u = n_u  # 控制输入维度
         self.n_z = n_z  # Koopman空间维度
 
-        # ============================================================
-        # 编码器: x -> z （表1）
-        # ============================================================
-        # 输入: n_x=5，隐藏层: 64->128->64，输出: n_z=32
-        # 使用nn.Sequential按顺序堆叠层
-        self.encoder = nn.Sequential(
-            nn.Linear(n_x, 64),    # 线性层: 5 -> 64
-            nn.ReLU(),              # ReLU激活函数: 引入非线性
-            nn.Linear(64, 128),    # 线性层: 64 -> 128
-            nn.ReLU(),              # ReLU激活函数
-            nn.Linear(128, 64),    # 线性层: 128 -> 64
-            nn.ReLU(),              # ReLU激活函数
-            nn.Linear(64, n_z),    # 线性层: 64 -> 32 (Koopman空间)
-        )
-
-        # ============================================================
-        # 解码器: z -> x （表2）
-        # ============================================================
-        # 输入: n_z=32，隐藏层: 64->32，输出: n_x=5
-        self.decoder = nn.Sequential(
-            nn.Linear(n_z, 64),    # 线性层: 32 -> 64
-            nn.ReLU(),              # ReLU激活函数
-            nn.Linear(64, 32),    # 线性层: 64 -> 32
-            nn.ReLU(),              # ReLU激活函数
-            nn.Linear(32, n_x),    # 线性层: 32 -> 5 (物理空间)
-        )
+        # 直进直出线性编解码：
+        # encode: z = [x, Lx]，decode: x_hat = z[:n_x]
+        self.linear_passthrough = True
+        self.lift = None
+        if n_z > n_x:
+            self.lift = nn.Linear(n_x, n_z - n_x, bias=False)
 
         # ============================================================
         # 线性动力学矩阵（第3.3.3节）
@@ -111,13 +93,9 @@ class DeepKoopmanPaper(nn.Module):
         2. 矩阵A：初始化为单位矩阵+小噪声，确保初始稳定性
         3. 矩阵B：使用Xavier初始化
         """
-        # 使用Xavier均匀分布初始化编码器和解码器的权重
-        # Xavier初始化可以保持每层的输出方差一致，避免梯度消失/爆炸
-        for module in [self.encoder, self.decoder]:
-            for layer in module:
-                if isinstance(layer, nn.Linear):  # 只初始化线性层
-                    nn.init.xavier_uniform_(layer.weight)  # Xavier初始化权重
-                    nn.init.zeros_(layer.bias)  # 偏置初始化为0
+        # 直进直出线性升维矩阵初始化
+        if self.lift is not None:
+            nn.init.xavier_uniform_(self.lift.weight)
 
         # 将矩阵A初始化为单位矩阵+小噪声
         # 这确保初始状态下Koopman空间演化接近恒等变换，提高稳定性
@@ -144,7 +122,10 @@ class DeepKoopmanPaper(nn.Module):
             z: 形状为(batch, n_z)的张量，Koopman空间状态
                n_z: Koopman空间维度（32）
         """
-        return self.encoder(x)  # 通过编码器网络前向传播
+        if self.lift is None:
+            return x
+        z_lift = self.lift(x)
+        return torch.cat([x, z_lift], dim=1)
 
     def decode(self, z):
         """
@@ -160,7 +141,7 @@ class DeepKoopmanPaper(nn.Module):
         返回:
             x_hat: 形状为(batch, n_x)的张量，重构的物理状态
         """
-        return self.decoder(z)  # 通过解码器网络前向传播
+        return z[:, :self.n_x]
 
     def linear_step(self, z, u):
         """
@@ -332,26 +313,27 @@ class DeepKoopmanPaper(nn.Module):
                 'decoder_weights': 解码器权重列表
                 'decoder_biases': 解码器偏置列表
         """
-        # 提取编码器权重和偏置
-        enc_weights, enc_biases = [], []
-        for layer in self.encoder:
-            if isinstance(layer, nn.Linear):  # 只处理线性层
-                # 将权重和偏置转移到CPU并转换为NumPy
-                enc_weights.append(layer.weight.detach().cpu().numpy())
-                enc_biases.append(layer.bias.detach().cpu().numpy())
+        if self.linear_passthrough:
+            lift_weight = None
+            if self.lift is not None:
+                lift_weight = self.lift.weight.detach().cpu().numpy()
+            return {
+                'mode': 'linear_passthrough',
+                'n_x': self.n_x,
+                'n_z': self.n_z,
+                'lift_weight': lift_weight,
+                'encoder_weights': [],
+                'encoder_biases': [],
+                'decoder_weights': [],
+                'decoder_biases': [],
+            }
 
-        # 提取解码器权重和偏置
-        dec_weights, dec_biases = [], []
-        for layer in self.decoder:
-            if isinstance(layer, nn.Linear):
-                dec_weights.append(layer.weight.detach().cpu().numpy())
-                dec_biases.append(layer.bias.detach().cpu().numpy())
-
+        # 兼容旧结构（当前默认不会走到这里）
         return {
-            'encoder_weights': enc_weights,  # 编码器权重列表
-            'encoder_biases': enc_biases,    # 编码器偏置列表
-            'decoder_weights': dec_weights,  # 解码器权重列表
-            'decoder_biases': dec_biases,    # 解码器偏置列表
+            'encoder_weights': [],
+            'encoder_biases': [],
+            'decoder_weights': [],
+            'decoder_biases': [],
         }
 
 

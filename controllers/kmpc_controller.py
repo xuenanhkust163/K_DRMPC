@@ -50,6 +50,7 @@ from controllers.mpc_common import (
     pytorch_to_casadi_encoder,  # PyTorch编码器转CasADi函数
     pytorch_to_casadi_decoder  # PyTorch解码器转CasADi函数
 )
+from model.projection import get_fixed_selector_matrices
 
 # 障碍物接近阈值：只有车辆在这个距离内才添加障碍物约束
 # 这样可以减少NLP的复杂度，只关注附近的障碍物
@@ -117,8 +118,13 @@ class KMPCController:
         # B: 控制矩阵 (n_z x n_u)
         self.A, self.B = koopman_model.get_matrices()
 
-        # 保存投影矩阵D (2 x n_z)
-        self.D = D_matrix
+        # 论文固定线性选择器（控制主路径使用）
+        # D_pos: z->[px,py], E: z->[v], F: z->[omega], D_vomega: z->[v,omega]
+        self.D_pos, self.E, self.F, self.D_vomega = get_fixed_selector_matrices(
+            self.A.shape[0]
+        )
+        # 保留外部传入D仅作诊断，不用于核心代价/约束
+        self.D_diag = D_matrix
 
         # 保存归一化参数，用于状态编码和解码
         self.norm_params = norm_params
@@ -141,7 +147,10 @@ class KMPCController:
         # 这样可以在CasADi符号计算中直接使用
         self._A_ca = ca.DM(self.A)  # CasADi格式的A矩阵
         self._B_ca = ca.DM(self.B)  # CasADi格式的B矩阵
-        self._D_ca = ca.DM(self.D)  # CasADi格式的D矩阵
+        self._D_pos_ca = ca.DM(self.D_pos)
+        self._E_ca = ca.DM(self.E)
+        self._F_ca = ca.DM(self.F)
+        self._D_vomega_ca = ca.DM(self.D_vomega)
 
     def _encode_state(self, x_physical):
         """
@@ -311,7 +320,7 @@ class KMPCController:
         for t in range(T):
             # 5.1 通过D投影跟踪[v, omega]
             # 使用投影矩阵D从Koopman状态z提取[v, omega]
-            y_t = ca.mtimes(self._D_ca, Z[t])
+            y_t = ca.mtimes(self._D_vomega_ca, Z[t])
             y_ref_t = ca.DM(y_ref[t])
             # 二次代价: (y - y_ref)^T * Q * (y - y_ref)
             cost += ca.mtimes([(y_t - y_ref_t).T, Q, (y_t - y_ref_t)])
@@ -321,10 +330,9 @@ class KMPCController:
             # 解码器是非线性的，会增加求解难度
             if t % 4 == 0:
                 # 使用解码器将Koopman状态映射回物理空间
-                x_dec = self._ca_decode(Z[t])
-                # 解码后的px, py在归一化空间中
-                pos_err_x = x_dec[0] - ref_px_norm[t]
-                pos_err_y = x_dec[1] - ref_py_norm[t]
+                pos = ca.mtimes(self._D_pos_ca, Z[t])
+                pos_err_x = pos[0] - ref_px_norm[t]
+                pos_err_y = pos[1] - ref_py_norm[t]
                 # 位置误差的二次代价
                 cost += Q_pos * (pos_err_x**2 + pos_err_y**2)
 
@@ -421,11 +429,10 @@ class KMPCController:
 
                 # 遍历每个检查步骤
                 for tc in check_steps:
-                    # 使用解码器将Koopman状态映射到物理空间
-                    x_decoded = self._ca_decode(Z[tc])
-                    # 解码后的位置在归一化空间中
-                    dx = x_decoded[0] - ox_norm
-                    dy = x_decoded[1] - oy_norm
+                    # 使用固定选择器提取位置（线性）
+                    pos = ca.mtimes(self._D_pos_ca, Z[tc])
+                    dx = pos[0] - ox_norm
+                    dy = pos[1] - oy_norm
 
                     # 通过反归一化计算物理距离的平方
                     dist_phys_sq = (

@@ -19,7 +19,11 @@ from config import (
 from data.data_loader import load_and_subsample, create_datasets
 from model.koopman_network import DeepKoopmanPaper
 from model.koopman_trainer import train_model
-from model.projection import compute_projection_matrix, save_projection_matrix
+from model.projection import (
+    compute_projection_matrix,
+    save_projection_matrix,
+    get_fixed_selector_matrices,
+)
 from visualization.plot_tsne import plot_tsne_latent_space
 
 
@@ -51,8 +55,8 @@ def main():
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Model parameters: {n_params:,}")
     print(f"Architecture:")
-    print(f"  Encoder: {N_X} -> 64 -> 128 -> 64 -> {N_Z}")
-    print(f"  Decoder: {N_Z} -> 64 -> 32 -> {N_X}")
+    print(f"  Encoder: z = [x, Lx], x:{N_X} -> z:{N_Z} (linear passthrough)")
+    print(f"  Decoder: x_hat = z[:{N_X}] (linear selector)")
     print(f"  Linear: A({N_Z}x{N_Z}), B({N_Z}x{N_U})")
 
     # Step 4: Train
@@ -62,22 +66,27 @@ def main():
         epochs=EPOCHS, lr=LEARNING_RATE, device=device
     )
 
-    # Step 5: Compute projection matrix D
-    print("\n--- Step 5: Computing projection matrix D ---")
+    # Step 5: Compute projection matrix D (diagnostic only)
+    print("\n--- Step 5: Computing projection matrix D (diagnostic) ---")
     model = model.to('cpu')
     model.eval()
     D, r2 = compute_projection_matrix(model, X_sub, gamma=GAMMA_RIDGE)
     save_projection_matrix(D)
+
+    # Paper-style fixed linear selectors for controller core path
+    D_pos, E_v, F_omg, D_vomg = get_fixed_selector_matrices(N_Z)
 
     # Step 6: Save Koopman matrices
     print("\n--- Step 6: Saving Koopman matrices ---")
     A, B = model.get_matrices()
     os.makedirs(MODEL_DIR, exist_ok=True)
     np.savez(os.path.join(MODEL_DIR, 'koopman_matrices.npz'),
-             A=A, B=B, D=D)
+             A=A, B=B, D=D,
+             D_pos=D_pos, E_v=E_v, F_omg=F_omg, D_vomg=D_vomg)
     print(f"  A: {A.shape}, max|eig|={np.max(np.abs(np.linalg.eigvals(A))):.4f}")
     print(f"  B: {B.shape}")
-    print(f"  D: {D.shape}, R^2={r2.mean():.4f}")
+    print(f"  D(ridge, diagnostic): {D.shape}, R^2={r2.mean():.4f}")
+    print(f"  Fixed selectors: D_pos{D_pos.shape}, E_v{E_v.shape}, F_omg{F_omg.shape}")
 
     # Save normalization params in output
     with open(os.path.join(MODEL_DIR, 'norm_params.json'), 'w') as f:

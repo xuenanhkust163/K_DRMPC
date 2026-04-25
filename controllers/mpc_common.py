@@ -464,6 +464,22 @@ def pytorch_to_casadi_encoder(weights_dict):
     # 在函数内部导入CasADi，避免全局导入依赖
     import casadi as ca
 
+    # 兼容直进直出线性结构
+    mode = weights_dict.get('mode', 'mlp')
+    if mode == 'linear_passthrough':
+        n_x = int(weights_dict['n_x'])
+        n_z = int(weights_dict['n_z'])
+        lift_weight = weights_dict.get('lift_weight', None)
+
+        def casadi_encode(x_sym):
+            if lift_weight is None or n_z <= n_x:
+                return x_sym
+            Wl = ca.DM(lift_weight)
+            z_lift = Wl @ x_sym
+            return ca.vertcat(x_sym, z_lift)
+
+        return casadi_encode
+
     # 提取编码器的权重和偏置
     enc_W = weights_dict['encoder_weights']  # 权重列表
     enc_b = weights_dict['encoder_biases']   # 偏置列表
@@ -514,6 +530,16 @@ def pytorch_to_casadi_decoder(weights_dict):
     """
     # 在函数内部导入CasADi，避免全局导入依赖
     import casadi as ca
+
+    # 兼容直进直出线性结构
+    mode = weights_dict.get('mode', 'mlp')
+    if mode == 'linear_passthrough':
+        n_x = int(weights_dict['n_x'])
+
+        def casadi_decode(z_sym):
+            return z_sym[:n_x]
+
+        return casadi_decode
 
     # 提取解码器的权重和偏置
     dec_W = weights_dict['decoder_weights']  # 权重列表

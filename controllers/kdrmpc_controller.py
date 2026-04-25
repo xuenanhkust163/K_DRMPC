@@ -55,6 +55,7 @@ from controllers.mpc_common import (
     pytorch_to_casadi_encoder,  # PyTorch编码器转CasADi函数
     pytorch_to_casadi_decoder  # PyTorch解码器转CasADi函数
 )
+from model.projection import get_fixed_selector_matrices
 
 # 障碍物接近阈值：只有车辆在这个距离内才添加障碍物约束
 OBSTACLE_PROXIMITY = 200.0  # 单位：米
@@ -136,8 +137,12 @@ class KDRMPCController:
         # B: 控制矩阵 (n_z x n_u)
         self.A, self.B = koopman_model.get_matrices()
 
-        # 保存投影矩阵D (2 x n_z)
-        self.D = D_matrix
+        # 论文固定线性选择器（控制主路径使用）
+        self.D_pos, self.E, self.F, self.D_vomega = get_fixed_selector_matrices(
+            self.A.shape[0]
+        )
+        # 保留外部传入D仅作诊断
+        self.D_diag = D_matrix
 
         # 保存归一化参数，用于状态编码和解码
         self.norm_params = norm_params
@@ -191,7 +196,10 @@ class KDRMPCController:
         # 这样可以在CasADi符号计算中直接使用
         self._A_ca = ca.DM(self.A)  # CasADi格式的A矩阵
         self._B_ca = ca.DM(self.B)  # CasADi格式的B矩阵
-        self._D_ca = ca.DM(self.D)  # CasADi格式的D矩阵
+        self._D_pos_ca = ca.DM(self.D_pos)
+        self._E_ca = ca.DM(self.E)
+        self._F_ca = ca.DM(self.F)
+        self._D_vomega_ca = ca.DM(self.D_vomega)
 
         # ================================================================
         # 构建CasADi函数（编解码器）
@@ -320,15 +328,18 @@ class KDRMPCController:
                                 for t in range(T)])
 
         for t in range(T):
-            y_t = ca.mtimes(self._D_ca, Z[t])
+            y_t = ca.vertcat(
+                ca.mtimes(self._E_ca, Z[t]),
+                ca.mtimes(self._F_ca, Z[t])
+            )
             y_ref_t = ca.DM(y_ref[t])
             cost += ca.mtimes([(y_t - y_ref_t).T, Q, (y_t - y_ref_t)])
 
-            # Position tracking via decoder (every 4th step)
+            # Position tracking via fixed linear selector (every 4th step)
             if t % 4 == 0:
-                x_dec = self._ca_decode(Z[t])
-                pos_err_x = x_dec[0] - ref_px_norm[t]
-                pos_err_y = x_dec[1] - ref_py_norm[t]
+                pos = ca.mtimes(self._D_pos_ca, Z[t])
+                pos_err_x = pos[0] - ref_px_norm[t]
+                pos_err_y = pos[1] - ref_py_norm[t]
                 cost += Q_pos * (pos_err_x**2 + pos_err_y**2)
 
             if t == 0:
@@ -384,10 +395,10 @@ class KDRMPCController:
                     lam = Lambda[key]
                     s = S_vars[key]
 
-                    # Decode nominal predicted state at time tc
-                    x_dec = self._ca_decode(Z[tc])
-                    px_pred = x_dec[0]
-                    py_pred = x_dec[1]
+                    # 固定选择器提取位置（线性）
+                    pos = ca.mtimes(self._D_pos_ca, Z[tc])
+                    px_pred = pos[0]
+                    py_pred = pos[1]
 
                     # Nominal safety margin (in physical space)
                     dx_phys = (px_pred - ox_norm) * self.norm_params['px_std']
@@ -397,10 +408,9 @@ class KDRMPCController:
 
                     # CVaR constraint for each disturbance sample
                     for i in range(self.N_samples):
-                        Cw_norm_i = float(self.Cw_norms[i])
                         w_norm_i = float(self.w_norms[i])
                         opti.subject_to(
-                            s[i] >= l_nom + Cw_norm_i + lam * w_norm_i
+                            s[i] >= l_nom + lam * w_norm_i
                         )
 
                     # CVaR aggregate constraint (softened with slack)
@@ -473,10 +483,6 @@ class KDRMPCController:
         else:
             self.w_samples = new_samples
         self.N_samples = len(self.w_samples)
-        self.Cw_norms = np.array([
-            np.linalg.norm(self.C_mat @ self.w_samples[i])
-            for i in range(self.N_samples)
-        ])
         self.w_norms = np.array([
             np.linalg.norm(self.w_samples[i])
             for i in range(self.N_samples)
