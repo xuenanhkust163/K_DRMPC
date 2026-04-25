@@ -266,7 +266,7 @@ class Simulator:
 
     @staticmethod
     def _export_result_to_step_log(result, output_path):
-        """Export a simulation result to a readable step-by-step text log."""
+        """Export a simulation result to an aligned step-by-step text log."""
         data = result.to_arrays()
         states = data['states']
         controls = data['controls']
@@ -279,17 +279,27 @@ class Simulator:
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
         with open(output_path, 'w') as f:
-            f.write(f"method={result.method_name}\n")
-            f.write(f"track={result.track_name}\n")
-            f.write(f"lap_completed={result.lap_completed}\n")
-            f.write(f"lap_time={result.lap_time}\n")
-            f.write(f"total_steps={result.total_steps}\n\n")
+            header = (
+                f"{'step':>5} {'t(s)':>8} {'status':<12} {'solve_ms':>9} "
+                f"{'x':>9} {'y':>9} {'psi':>9} {'v':>8} {'omega':>8} "
+                f"{'ref_v':>8} {'ref_omega':>10} {'a':>8} {'delta':>8} "
+                f"{'next_v':>8} {'next_omega':>10}"
+            )
+            f.write(header + "\n")
+            f.write("-" * len(header) + "\n")
+            f.write(f"# method={result.method_name}\n")
+            f.write(f"# track={result.track_name}\n")
+            f.write(f"# lap_completed={result.lap_completed}\n")
+            f.write(f"# lap_time={result.lap_time}\n")
+            f.write(f"# total_steps={result.total_steps}\n")
 
             if len(states) > 0:
                 f.write(
-                    "init "
-                    f"x=[{states[0, 0]:.6f}, {states[0, 1]:.6f}, {states[0, 2]:.6f}, {states[0, 3]:.6f}, {states[0, 4]:.6f}]\n"
+                    "# init_state="
+                    f"[{states[0, 0]:.6f}, {states[0, 1]:.6f}, {states[0, 2]:.6f}, "
+                    f"{states[0, 3]:.6f}, {states[0, 4]:.6f}]\n"
                 )
+            f.write("\n")
 
             for step in range(len(controls)):
                 x_t = states[step]
@@ -302,19 +312,17 @@ class Simulator:
                 t_sim = timestamps[step] if step < len(timestamps) else float(step)
 
                 f.write(
-                    f"step={step:04d} t={t_sim:8.3f}s "
-                    f"status={status} solve_ms={solve_time_ms:8.3f} "
-                    f"x=[{x_t[0]:.6f}, {x_t[1]:.6f}, {x_t[2]:.6f}, {x_t[3]:.6f}, {x_t[4]:.6f}] "
-                    f"ref=[{ref_t[0]:.6f}, {ref_t[1]:.6f}, {ref_t[2]:.6f}, {ref_t[3]:.6f}, {ref_t[4]:.6f}] "
-                    f"u=[{u_t[0]:.6f}, {u_t[1]:.6f}] "
-                    f"x_next=[{x_next[0]:.6f}, {x_next[1]:.6f}, {x_next[2]:.6f}, {x_next[3]:.6f}, {x_next[4]:.6f}]\n"
+                    f"{step:5d} {t_sim:8.3f} {status:<12.12} {solve_time_ms:9.3f} "
+                    f"{x_t[0]:9.3f} {x_t[1]:9.3f} {x_t[2]:9.4f} {x_t[3]:8.3f} {x_t[4]:8.4f} "
+                    f"{ref_t[3]:8.3f} {ref_t[4]:10.4f} {u_t[0]:8.4f} {u_t[1]:8.4f} "
+                    f"{x_next[3]:8.3f} {x_next[4]:10.4f}\n"
                 )
                 if debug:
                     step0 = debug.get('step0', {})
                     horizon = debug.get('horizon', {})
                     active = ','.join(debug.get('active_constraints', [])) or 'none'
                     f.write(
-                        f"  debug step0={step0} horizon={horizon} active={active} "
+                        f"  # debug step0={step0} horizon={horizon} active={active} "
                         f"v_slack_max={debug.get('v_slack_max', 0.0):.6f} "
                         f"obs_slack_max={debug.get('obs_slack_max', 0.0):.6f}\n"
                     )
@@ -523,15 +531,12 @@ class Simulator:
         base_name = os.path.splitext(os.path.basename(path))[0]
         log_dir = os.path.join(save_dir, 'logs')
         step_log_path = os.path.join(log_dir, f"{base_name}.log")
-        compact_log_path = os.path.join(log_dir, f"{base_name}.compact.log")
         debug_summary_path = os.path.join(log_dir, f"{base_name}.debug_summary.log")
         Simulator._export_result_to_step_log(result, step_log_path)
-        Simulator._export_result_to_compact_log(result, compact_log_path)
         exported_debug_summary = Simulator._export_result_debug_summary(result, debug_summary_path)
         figure_paths = Simulator._export_result_figures(result, base_name)
         print(f"结果已保存到 {path}")
         print(f"报表链接: {step_log_path}")
-        print(f"报表链接: {compact_log_path}")
         if exported_debug_summary:
             print(f"报表链接: {debug_summary_path}")
         for figure_path in figure_paths:

@@ -40,6 +40,8 @@ from config import (
     DELTA_MAX,  # 最大转向角 [弧度]
     DELTA_RATE_MAX,  # 最大转向角速率 [弧度/秒]
     D_SAFE,  # 安全距离余量 [米]
+    TRACK_HALF_WIDTH,
+    TRACK_BOUNDARY_SLACK_PENALTY,
     VEHICLE_RADIUS,  # 车辆半径 [米]
     N_DISTURBANCE_SAMPLES,  # 干扰样本数量，默认100
     THETA_WASSERSTEIN,  # Wasserstein球半径，默认0.1
@@ -347,6 +349,11 @@ class KDRMPCController:
         opti.subject_to(v_slack >= 0)
         cost += MIN_SPEED_SLACK_PENALTY * ca.dot(v_slack, v_slack)
 
+        # 赛道边界软约束松弛变量（论文 |d(s)|<=W/2；加入松弛避免不可行）
+        track_slack = opti.variable(T + 1)
+        opti.subject_to(track_slack >= 0)
+        cost += TRACK_BOUNDARY_SLACK_PENALTY * ca.dot(track_slack, track_slack)
+
         # Position tracking weight (decoded position vs reference)
         Q_pos = 0.5
 
@@ -361,6 +368,11 @@ class KDRMPCController:
             ref_trajectory[min(t, len(ref_trajectory)-1), IDX_PSI]
             for t in range(T)
         ])
+        # 终端约束也需要参考航向
+        ref_psi_terminal = float(ref_trajectory[min(T - 1, len(ref_trajectory) - 1), IDX_PSI])
+
+        px_std = float(self.norm_params['px_std'])
+        py_std = float(self.norm_params['py_std'])
 
         min_speed_rule = MinSpeedRule(
             floor_abs=MIN_SPEED_FLOOR,
@@ -452,6 +464,23 @@ class KDRMPCController:
                     -DELTA_RATE_MAX * DT,
                     U[1, t] - U[1, t - 1],
                     DELTA_RATE_MAX * DT))
+
+        # === Track Boundary Constraints (paper Eq. |d(s)| <= W/2) ===
+        for t in range(T + 1):
+            ref_idx = min(t, T - 1)
+            psi_ref = ref_psi[ref_idx] if t < T else ref_psi_terminal
+
+            # 线性选择器提取位置（归一化坐标），再换算为米制偏差
+            pos_t = ca.mtimes(self._D_pos_ca, Z[t])
+            dx_m = (pos_t[0] - float(ref_px_norm[ref_idx])) * px_std
+            dy_m = (pos_t[1] - float(ref_py_norm[ref_idx])) * py_std
+
+            # 论文中的 signed lateral deviation d(s)
+            d_lat = -ca.sin(psi_ref) * dx_m + ca.cos(psi_ref) * dy_m
+
+            # 软化的双边约束：|d_lat| <= TRACK_HALF_WIDTH + slack
+            opti.subject_to(d_lat <= TRACK_HALF_WIDTH + track_slack[t])
+            opti.subject_to(-d_lat <= TRACK_HALF_WIDTH + track_slack[t])
 
         # === Distributionally Robust CVaR Constraints (Eq. 4.10-4.11) ===
         if n_obs > 0 and n_check > 0:
