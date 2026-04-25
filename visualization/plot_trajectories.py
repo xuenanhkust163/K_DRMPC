@@ -33,6 +33,31 @@ def _compute_track_boundaries(track, half_width=PLOT_TRACK_HALF_WIDTH):
     return (left_x, left_y), (right_x, right_y)
 
 
+def _add_crashed_banner(fig, ax, result, color='red'):
+    """Overlay a visible crash marker when a run ended by boundary hit."""
+    if not getattr(result, 'crashed', False):
+        return
+
+    states = result.to_arrays()['states']
+    if len(states) > 0:
+        ax.plot(states[-1, 0], states[-1, 1], marker='x', color=color,
+                markersize=12, mew=3, linestyle='None', zorder=6)
+        ax.text(states[-1, 0], states[-1, 1], 'CRASHED', color=color,
+                fontsize=12, fontweight='bold', ha='left', va='bottom', zorder=7)
+
+    fig.text(
+        0.5,
+        0.965,
+        'CRASHED',
+        color=color,
+        fontsize=24,
+        fontweight='bold',
+        ha='center',
+        va='top',
+        alpha=0.9,
+    )
+
+
 def plot_trajectory_comparison(results, track, title="Trajectory Comparison",
                                filename=None, save_dir=FIGURES_DIR):
     """
@@ -81,6 +106,7 @@ def plot_trajectory_comparison(results, track, title="Trajectory Comparison",
 
         # Mark start position
         ax.plot(states[0, 0], states[0, 1], 'o', color=color, markersize=8)
+        _add_crashed_banner(fig, ax, result, color='red')
 
     ax.set_xlabel('X Position (m)', fontsize=12)
     ax.set_ylabel('Y Position (m)', fontsize=12)
@@ -131,6 +157,10 @@ def plot_state_comparison(results, track, filename=None, save_dir=FIGURES_DIR):
     axes[-1].set_xlabel('Time (s)', fontsize=12)
     fig.suptitle(f'State Evolution: {track.__class__.__name__}', fontsize=14)
 
+    if any(getattr(result, 'crashed', False) for result in results.values()):
+        fig.text(0.5, 0.985, 'CRASHED', color='red', fontsize=22,
+                 fontweight='bold', ha='center', va='top', alpha=0.9)
+
     plt.tight_layout()
     add_figure_timestamp(fig)
 
@@ -170,6 +200,10 @@ def plot_control_comparison(results, filename=None, save_dir=FIGURES_DIR):
 
     axes[-1].set_xlabel('Time (s)', fontsize=12)
     fig.suptitle('Control Input Comparison', fontsize=14)
+
+    if any(getattr(result, 'crashed', False) for result in results.values()):
+        fig.text(0.5, 0.985, 'CRASHED', color='red', fontsize=22,
+                 fontweight='bold', ha='center', va='top', alpha=0.9)
 
     plt.tight_layout()
     add_figure_timestamp(fig)

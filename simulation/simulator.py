@@ -15,7 +15,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import (
     DT, MAX_SIM_STEPS, V_MIN, V_MAX, A_MIN, A_MAX,
     DELTA_MAX, RESULTS_DIR, FIGURES_DIR,
-    IDX_PX, IDX_PY, IDX_PSI, IDX_V, IDX_OMEGA
+    IDX_PX, IDX_PY, IDX_PSI, IDX_V, IDX_OMEGA,
+    CONTROL_UPDATE_INTERVAL,
+    TRACK_HALF_WIDTH, VEHICLE_RADIUS,
 )
 # 从自行车模型模块导入离散时间步长函数
 from vehicle.bicycle_model import discrete_step
@@ -44,6 +46,10 @@ class SimResult:
         self.lap_completed = False  # 标志位，表示是否完成了一圈
         self.lap_time = None       # 完成一圈所需的时间
         self.total_steps = 0       # 总仿真步数
+        self.crashed = False       # 是否撞到赛道边界而提前终止
+        self.crash_step = None     # 撞车时的步数
+        self.crash_time = None     # 撞车时刻 [s]
+        self.crash_reason = None   # 撞车原因描述
 
     def to_arrays(self):
         """将列表转换为NumPy数组格式，便于后续处理和计算。"""
@@ -53,6 +59,10 @@ class SimResult:
             'solve_times': np.array(self.solve_times),  # 将求解时间转换为一维数组
             'timestamps': np.array(self.timestamps),  # 将时间戳转换为一维数组
             'solve_debug': list(self.solve_debug),
+            'crashed': self.crashed,
+            'crash_step': self.crash_step,
+            'crash_time': self.crash_time,
+            'crash_reason': self.crash_reason,
         }
 
 
@@ -77,7 +87,8 @@ class Simulator:
 
     def run(self, x0=None, max_steps=MAX_SIM_STEPS, lap_fraction=0.95,
             verbose=True, detailed_step_log=False,
-            detailed_step_log_max_steps=None):
+            detailed_step_log_max_steps=None,
+            control_update_interval=CONTROL_UPDATE_INTERVAL):
         """
         运行闭环仿真。
 
@@ -92,6 +103,9 @@ class Simulator:
         Returns:
             result: SimResult实例，包含仿真结果数据
         """
+        if control_update_interval <= 0:
+            raise ValueError("control_update_interval 必须为正整数")
+
         track = self.track  # 获取赛道对象的引用
         controller = self.controller  # 获取控制器对象的引用
         obstacles = track.get_obstacles()  # 获取赛道上的障碍物列表
@@ -116,10 +130,15 @@ class Simulator:
         max_s = track.total_length()  # 获取赛道总长度
         cumulative_s = 0.0  # 初始化累积行驶距离
         prev_s = start_s  # 记录上一步的弧长位置
+        crash_lat_limit = max(TRACK_HALF_WIDTH - VEHICLE_RADIUS, 0.0)
 
         if verbose:
             print(f"\n正在仿真 {controller.name} 在 {track.__class__.__name__} 赛道上...")
             print(f"  赛道长度: {max_s:.0f}m, 障碍物数量: {len(obstacles)}")
+            print(f"  控制更新间隔: 每 {control_update_interval} 步求解一次MPC")
+
+        held_u = np.zeros(2)
+        held_info = {'solve_time': 0.0, 'status': 'hold', 'debug': None}
 
         for step in range(max_steps):  # 开始主仿真循环
             t_sim = step * DT  # 计算当前仿真时间（步数乘以时间步长）
@@ -140,18 +159,35 @@ class Simulator:
             from config import T_HORIZON  # 导入预测时域
             ref = track.get_reference_trajectory(idx, T_HORIZON)  # 获取从当前索引开始的预测时域内的参考轨迹
 
-            # 求解MPC优化问题
-            try:
-                u_opt, info = controller.solve(x, ref, obstacles)  # 调用控制器求解最优控制输入
-            except Exception as e:
-                if verbose:
-                    print(f"  步骤 {step}: 控制器错误: {e}")
-                u_opt = np.zeros(2)  # 发生错误时使用零控制输入
-                info = {'solve_time': 0, 'status': f'error: {str(e)[:30]}'}  # 记录错误信息
+            # 求解MPC优化问题；若开启降频，则在中间步保持上一次控制
+            should_solve = (step % control_update_interval == 0)
+            if should_solve:
+                try:
+                    # 将“当前实际保持控制”作为u_prev传入，避免降频模式下控制器内部状态漂移
+                    try:
+                        u_opt, info = controller.solve(x, ref, obstacles, u_prev=held_u)
+                    except TypeError:
+                        u_opt, info = controller.solve(x, ref, obstacles)
+                except Exception as e:
+                    if verbose:
+                        print(f"  步骤 {step}: 控制器错误: {e}")
+                    # 发生错误时保持上一次控制，避免因单步求解失败触发控制跳变
+                    u_opt = held_u.copy()
+                    info = {'solve_time': 0, 'status': f'error: {str(e)[:30]}', 'debug': None}
+            else:
+                u_opt = held_u.copy()
+                info = held_info.copy()
+                info['solve_time'] = 0.0
+                info['status'] = f"hold({held_info.get('status', 'unknown')})"
 
             # 对控制输入进行限幅处理，确保在物理约束范围内
             u_opt[0] = np.clip(u_opt[0], A_MIN, A_MAX)  # 限制加速度在[A_MIN, A_MAX]范围内
             u_opt[1] = np.clip(u_opt[1], -DELTA_MAX, DELTA_MAX)  # 限制转向角在[-DELTA_MAX, DELTA_MAX]范围内
+
+            # 在限幅后更新保持控制，保证下一步复用的就是实际施加到车辆的控制量
+            if should_solve:
+                held_u = u_opt.copy()
+                held_info = info.copy()
 
             # 向被控对象添加干扰信号
             noise = np.zeros(5)  # 初始化5维噪声向量（对应5个状态变量）
@@ -248,6 +284,21 @@ class Simulator:
                           f"时间={result.lap_time:.1f}s")
                 break  # 跳出仿真循环
 
+            # 检查是否撞到赛道边界
+            if abs(lat_err) >= crash_lat_limit:
+                result.crashed = True
+                result.crash_step = step + 1
+                result.crash_time = (step + 1) * DT
+                result.crash_reason = (
+                    f"track boundary hit: |lat_err|={abs(lat_err):.3f}m >= {crash_lat_limit:.3f}m"
+                )
+                if verbose:
+                    print(
+                        f"  车辆在第 {step+1} 步撞到赛道边界 "
+                        f"(横向误差={lat_err:.2f}m, 阈值={crash_lat_limit:.2f}m)"
+                    )
+                break
+
             # 检查是否发散（车辆偏离赛道过远）
             if abs(lat_err) > 500:  # 如果横向误差超过500米
                 if verbose:
@@ -292,6 +343,10 @@ class Simulator:
             f.write(f"# lap_completed={result.lap_completed}\n")
             f.write(f"# lap_time={result.lap_time}\n")
             f.write(f"# total_steps={result.total_steps}\n")
+            f.write(f"# crashed={result.crashed}\n")
+            f.write(f"# crash_step={result.crash_step}\n")
+            f.write(f"# crash_time={result.crash_time}\n")
+            f.write(f"# crash_reason={result.crash_reason}\n")
 
             if len(states) > 0:
                 f.write(
@@ -438,6 +493,10 @@ class Simulator:
             f.write(f"method={result.method_name}\n")
             f.write(f"track={result.track_name}\n")
             f.write(f"total_steps={result.total_steps}\n\n")
+            f.write(f"crashed={result.crashed}\n")
+            f.write(f"crash_step={result.crash_step}\n")
+            f.write(f"crash_time={result.crash_time}\n")
+            f.write(f"crash_reason={result.crash_reason}\n\n")
 
             f.write("[Top Dominant Cost Terms]\n")
             for key, mean_val in summary['dominant_costs']:

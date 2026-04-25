@@ -110,6 +110,12 @@ def parse_cli_args():
         default="default",
         help="K系控制器代价模板：default / tracking-first / progress-first。",
     )
+    parser.add_argument(
+        "--control-every",
+        type=int,
+        default=1,
+        help="控制降频：每N个仿真步求解一次MPC，中间保持上次控制。",
+    )
     return parser.parse_args()
 
 
@@ -175,7 +181,8 @@ def load_koopman_components():
 
 def run_single_method(method_name, track, controller, dist_gen, max_steps,
                       detailed_step_log=False,
-                      detailed_step_log_max_steps=None):
+                      detailed_step_log_max_steps=None,
+                      control_update_interval=1):
     """
     在单个赛道上运行单个方法的仿真。
 
@@ -211,6 +218,7 @@ def run_single_method(method_name, track, controller, dist_gen, max_steps,
         verbose=True,
         detailed_step_log=detailed_step_log,
         detailed_step_log_max_steps=detailed_step_log_max_steps,
+        control_update_interval=control_update_interval,
     )
 
     # 保存仿真结果到PKL文件（Python pickle格式）
@@ -228,7 +236,8 @@ def run_all_methods_on_track(track, model, D, norm_params, dist_gen,
                              max_steps=MAX_SIM_STEPS,
                              detailed_step_log=False,
                              detailed_step_log_max_steps=None,
-                             cost_profile="default"):
+                             cost_profile="default",
+                             control_update_interval=1):
     """
     在单个赛道上运行所有4种MPC方法。
 
@@ -271,7 +280,8 @@ def run_all_methods_on_track(track, model, D, norm_params, dist_gen,
         results['LMPC'] = run_single_method('LMPC', track, lmpc, dist_gen,
                                             max_steps,
                                             detailed_step_log,
-                                            detailed_step_log_max_steps)
+                                            detailed_step_log_max_steps,
+                                            control_update_interval)
 
         # ================================================================
         # 2. NMPC（非线性MPC）
@@ -283,7 +293,8 @@ def run_all_methods_on_track(track, model, D, norm_params, dist_gen,
         results['NMPC'] = run_single_method('NMPC', track, nmpc, dist_gen,
                                             max_steps,
                                             detailed_step_log,
-                                            detailed_step_log_max_steps)
+                                            detailed_step_log_max_steps,
+                                            control_update_interval)
 
         # ================================================================
         # 3. K-MPC（Koopman MPC）
@@ -300,7 +311,8 @@ def run_all_methods_on_track(track, model, D, norm_params, dist_gen,
         results['K-MPC'] = run_single_method('K-MPC', track, kmpc, dist_gen,
                                              max_steps,
                                              detailed_step_log,
-                                             detailed_step_log_max_steps)
+                                             detailed_step_log_max_steps,
+                                             control_update_interval)
     else:
         print("\n[Skip] LMPC/NMPC/K-MPC 已禁用（ENABLE_BASELINE_METHODS=False）")
 
@@ -322,7 +334,8 @@ def run_all_methods_on_track(track, model, D, norm_params, dist_gen,
         results['K-DRMPC'] = run_single_method('K-DRMPC', track, kdrmpc,
                                                dist_gen, max_steps,
                                                detailed_step_log,
-                                               detailed_step_log_max_steps)
+                                               detailed_step_log_max_steps,
+                                               control_update_interval)
     else:
         print("[Skip] K-DRMPC 已禁用（ENABLE_OUR_METHOD_KDRMPC=False）")
 
@@ -501,6 +514,8 @@ def main():
     分析和可视化（生成图表和表格）。
     """
     args = parse_cli_args()
+    if args.control_every <= 0:
+        raise ValueError("--control-every 必须为正整数")
     detailed_step_log = ENABLE_DETAILED_STEP_LOG or args.verbose
     if args.steps is not None:
         if args.steps <= 0:
@@ -518,7 +533,8 @@ def main():
     print("=" * 60)
     print(
         f"配置: detailed_step_log={detailed_step_log}, "
-        f"max_steps={sim_max_steps}, cost_profile={args.cost_profile}"
+        f"max_steps={sim_max_steps}, cost_profile={args.cost_profile}, "
+        f"control_every={args.control_every}"
     )
 
     # ================================================================
@@ -572,6 +588,7 @@ def main():
             detailed_step_log=detailed_step_log,
             detailed_step_log_max_steps=DETAILED_STEP_LOG_MAX_STEPS,
             cost_profile=args.cost_profile,
+            control_update_interval=args.control_every,
         )
     else:
         print("[Skip] 短圈Lusail赛道已禁用（ENABLE_SHORT_LUSAIL_TRACK=False）")
@@ -586,6 +603,7 @@ def main():
             detailed_step_log=detailed_step_log,
             detailed_step_log_max_steps=DETAILED_STEP_LOG_MAX_STEPS,
             cost_profile=args.cost_profile,
+            control_update_interval=args.control_every,
         )
 
     # ================================================================
@@ -604,7 +622,8 @@ def main():
             max_steps=sim_max_steps,
             detailed_step_log=detailed_step_log,
             detailed_step_log_max_steps=DETAILED_STEP_LOG_MAX_STEPS,
-            cost_profile=args.cost_profile)
+            cost_profile=args.cost_profile,
+            control_update_interval=args.control_every)
 
     # ================================================================
     # 步骤6：可选分析（默认关闭）
