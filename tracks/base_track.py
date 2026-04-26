@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 from scipy.interpolate import CubicSpline
 from config import (
     IDX_PX, IDX_PY, IDX_PSI, IDX_V, IDX_OMEGA,
-    A_LAT_MAX, V_MAX, REF_SPEED_SCALE,
+    A_LAT_MAX, V_MAX, REF_SPEED_SCALE, ENABLE_OBSTACLES,
 )
 
 
@@ -21,6 +21,7 @@ class BaseTrack(ABC):
         self._curvature = None
         self._arc_length = None
         self._obstacles = []
+        self._rect_obstacles = []
         self._total_length = 0.0
         self._num_points = 0
 
@@ -47,7 +48,15 @@ class BaseTrack(ABC):
 
     def get_obstacles(self):
         """Returns list of (ox, oy, radius) tuples."""
+        if not ENABLE_OBSTACLES:
+            return []
         return list(self._obstacles)
+
+    def get_rect_obstacles(self):
+        """Returns list of rectangular obstacles as (cx, cy, length, width, angle_rad)."""
+        if not ENABLE_OBSTACLES:
+            return []
+        return list(self._rect_obstacles)
 
     def total_length(self):
         """Total track length in meters."""

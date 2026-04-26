@@ -66,6 +66,8 @@ from model.projection import get_fixed_selector_matrices
 
 # 障碍物接近阈值：只有车辆在这个距离内才添加障碍物约束
 OBSTACLE_PROXIMITY = 200.0  # 单位：米
+OBSTACLE_STRATEGY_CHOICES = ("robust", "non-robust")
+DEFAULT_OBSTACLE_STRATEGY = "robust"
 
 # 优化中使用的最大干扰样本数（为了保证可处理性）
 # 如果样本太多，会使优化问题过于复杂，因此进行子采样
@@ -118,7 +120,7 @@ class KDRMPCController:
     def __init__(self, koopman_model, D_matrix, norm_params,
                  disturbance_samples=None, theta=THETA_WASSERSTEIN,
                  epsilon=EPSILON_CVAR, cost_builder=None,
-                 cost_profile="default"):
+                 cost_profile="default", obstacle_strategy=DEFAULT_OBSTACLE_STRATEGY):
         """
         初始化K-DRMPC控制器。
 
@@ -174,6 +176,13 @@ class KDRMPCController:
 
         # CVaR风险水平
         self.epsilon = epsilon
+
+        if obstacle_strategy not in OBSTACLE_STRATEGY_CHOICES:
+            raise ValueError(
+                f"obstacle_strategy 必须是 {OBSTACLE_STRATEGY_CHOICES} 之一，"
+                f"收到: {obstacle_strategy}"
+            )
+        self.obstacle_strategy = obstacle_strategy
 
         # ================================================================
         # 干扰样本处理（子采样以保证可处理性）
@@ -321,9 +330,11 @@ class KDRMPCController:
 
         # 障碍物数量和检查步骤
         n_obs = len(nearby_obstacles)
-        # 检查步骤：从第4步开始，每隔8步检查一次
-        # 比K-MPC更稀疏，因为CVaR约束计算成本更高
-        check_steps = list(range(4, T + 1, 8))
+        # 鲁棒CVaR约束计算成本更高，使用更稀疏的检查点；非鲁棒可更密集
+        if self.obstacle_strategy == "robust":
+            check_steps = list(range(4, T + 1, 8))
+        else:
+            check_steps = list(range(1, T + 1, 4))
         n_check = len(check_steps)
 
         opti = ca.Opti()
@@ -482,66 +493,78 @@ class KDRMPCController:
             opti.subject_to(d_lat <= TRACK_HALF_WIDTH + track_slack[t])
             opti.subject_to(-d_lat <= TRACK_HALF_WIDTH + track_slack[t])
 
-        # === Distributionally Robust CVaR Constraints (Eq. 4.10-4.11) ===
+        obs_slack = None
         if n_obs > 0 and n_check > 0:
-            # CVaR auxiliary variables
-            Lambda = {}
-            S_vars = {}
-            for j in range(n_obs):
-                for tc_idx, tc in enumerate(check_steps):
-                    key = (j, tc)
-                    Lambda[key] = opti.variable()
-                    opti.subject_to(Lambda[key] >= 0)
-                    S_vars[key] = opti.variable(self.N_samples)
-                    opti.subject_to(S_vars[key] >= 0)
-
-            # Add obstacle slack for robustness
             n_obs_slack = n_obs * n_check
             obs_slack = opti.variable(n_obs_slack)
             opti.subject_to(obs_slack >= 0)
             cost += OBSTACLE_SLACK_PENALTY * ca.dot(obs_slack, obs_slack)
 
-            obs_slack_idx = 0
-            for j, obs in enumerate(nearby_obstacles):
-                ox, oy, r = obs
-                d_min = r + VEHICLE_RADIUS + D_SAFE
+            if self.obstacle_strategy == "robust":
+                # === Distributionally Robust CVaR Constraints (Eq. 4.10-4.11) ===
+                Lambda = {}
+                S_vars = {}
+                for j in range(n_obs):
+                    for tc in check_steps:
+                        key = (j, tc)
+                        Lambda[key] = opti.variable()
+                        opti.subject_to(Lambda[key] >= 0)
+                        S_vars[key] = opti.variable(self.N_samples)
+                        opti.subject_to(S_vars[key] >= 0)
 
-                ox_norm = (ox - self.norm_params['px_mean']) / self.norm_params['px_std']
-                oy_norm = (oy - self.norm_params['py_mean']) / self.norm_params['py_std']
+                obs_slack_idx = 0
+                for j, obs in enumerate(nearby_obstacles):
+                    ox, oy, r = obs
+                    d_min = r + VEHICLE_RADIUS + D_SAFE
 
-                for tc_idx, tc in enumerate(check_steps):
-                    key = (j, tc)
-                    lam = Lambda[key]
-                    s = S_vars[key]
+                    ox_norm = (ox - self.norm_params['px_mean']) / self.norm_params['px_std']
+                    oy_norm = (oy - self.norm_params['py_mean']) / self.norm_params['py_std']
 
-                    # 固定选择器提取位置（线性）
-                    pos = ca.mtimes(self._D_pos_ca, Z[tc])
-                    px_pred = pos[0]
-                    py_pred = pos[1]
+                    for tc in check_steps:
+                        key = (j, tc)
+                        lam = Lambda[key]
+                        s = S_vars[key]
 
-                    # Nominal safety margin (in physical space)
-                    dx_phys = (px_pred - ox_norm) * self.norm_params['px_std']
-                    dy_phys = (py_pred - oy_norm) * self.norm_params['py_std']
-                    dist_physical = ca.sqrt(dx_phys**2 + dy_phys**2 + 1e-6)
-                    l_nom = d_min - dist_physical  # l <= 0 is safe
+                        pos = ca.mtimes(self._D_pos_ca, Z[tc])
+                        px_pred = pos[0]
+                        py_pred = pos[1]
 
-                    # CVaR constraint for each disturbance sample
-                    for i in range(self.N_samples):
-                        w_norm_i = float(self.w_norms[i])
+                        dx_phys = (px_pred - ox_norm) * self.norm_params['px_std']
+                        dy_phys = (py_pred - oy_norm) * self.norm_params['py_std']
+                        dist_physical = ca.sqrt(dx_phys**2 + dy_phys**2 + 1e-6)
+                        l_nom = d_min - dist_physical
+
+                        for i in range(self.N_samples):
+                            w_norm_i = float(self.w_norms[i])
+                            opti.subject_to(s[i] >= l_nom + lam * w_norm_i)
+
+                        sum_s = ca.sum1(s)
                         opti.subject_to(
-                            s[i] >= l_nom + lam * w_norm_i
+                            lam * self.theta +
+                            (1.0 / (self.epsilon * self.N_samples)) * sum_s
+                            <= obs_slack[obs_slack_idx]
                         )
+                        obs_slack_idx += 1
+            else:
+                # === Non-robust deterministic obstacle constraints ===
+                obs_slack_idx = 0
+                for obs in nearby_obstacles:
+                    ox, oy, r = obs
+                    d_min = r + VEHICLE_RADIUS + D_SAFE
 
-                    # CVaR aggregate constraint (softened with slack)
-                    sum_s = ca.sum1(s)
-                    opti.subject_to(
-                        lam * self.theta +
-                        (1.0 / (self.epsilon * self.N_samples)) * sum_s
-                        <= obs_slack[obs_slack_idx]
-                    )
-                    obs_slack_idx += 1
-                else:
-                    obs_slack = None
+                    ox_norm = (ox - self.norm_params['px_mean']) / self.norm_params['px_std']
+                    oy_norm = (oy - self.norm_params['py_mean']) / self.norm_params['py_std']
+
+                    for tc in check_steps:
+                        pos = ca.mtimes(self._D_pos_ca, Z[tc])
+                        dx_phys = (pos[0] - ox_norm) * self.norm_params['px_std']
+                        dy_phys = (pos[1] - oy_norm) * self.norm_params['py_std']
+                        dist_phys_sq = dx_phys**2 + dy_phys**2
+
+                        opti.subject_to(
+                            dist_phys_sq + obs_slack[obs_slack_idx] >= d_min**2
+                        )
+                        obs_slack_idx += 1
 
         opti.minimize(cost)
 
@@ -603,6 +626,7 @@ class KDRMPCController:
             'method': self.name,
             'theta': self.theta,
             'epsilon': self.epsilon,
+            'obstacle_strategy': self.obstacle_strategy,
             'debug': debug_info,
         }
 

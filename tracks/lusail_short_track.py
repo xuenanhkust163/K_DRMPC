@@ -91,11 +91,11 @@ class LusailShortTrack(BaseTrack):
 
         print(
             f"Lusail Short Track: {self._total_length:.0f}m, "
-            f"{self._num_points} points, {len(self._obstacles)} obstacles"
+            f"{self._num_points} points, {len(self._rect_obstacles)} rectangles"
         )
 
     def _place_obstacles(self):
-        """Place 3 obstacles at high-curvature points."""
+        """Place several large rectangular obstacles near high-curvature points."""
         from scipy.ndimage import uniform_filter1d
 
         N = self._num_points
@@ -114,12 +114,45 @@ class LusailShortTrack(BaseTrack):
 
         corner_indices.sort()
 
-        offset_distance = 4.5
+        self._obstacles = []
+        self._rect_obstacles = []
+
+        offset_distance = 5.0
+        rect_length = 30.0
+        rect_width = 16.0
         for idx in corner_indices:
             heading = self._heading[idx]
             sign = np.sign(self._curvature[idx])
             nx = -np.sin(heading) * sign
             ny = np.cos(heading) * sign
-            ox = self._centerline_x[idx] + offset_distance * nx
-            oy = self._centerline_y[idx] + offset_distance * ny
-            self._obstacles.append((ox, oy, OBSTACLE_RADIUS))
+            cx = self._centerline_x[idx] + offset_distance * nx
+            cy = self._centerline_y[idx] + offset_distance * ny
+            rect_angle = heading + 0.5 * np.pi  # 长边与中线切向垂直（沿法向）
+
+            self._rect_obstacles.append((cx, cy, rect_length, rect_width, rect_angle))
+            self._rasterize_rect_to_circles(
+                cx=cx,
+                cy=cy,
+                length=rect_length,
+                width=rect_width,
+                angle=rect_angle,
+                nx_cells=4,
+                ny_cells=2,
+            )
+
+    def _rasterize_rect_to_circles(self, cx, cy, length, width, angle, nx_cells=4, ny_cells=2):
+        """Approximate a rectangle by circles so existing circular constraints remain usable."""
+        dx = float(length) / float(nx_cells)
+        dy = float(width) / float(ny_cells)
+        r = 0.5 * np.hypot(dx, dy)
+
+        c = np.cos(angle)
+        s = np.sin(angle)
+
+        for ix in range(nx_cells):
+            x_local = -0.5 * length + (ix + 0.5) * dx
+            for iy in range(ny_cells):
+                y_local = -0.5 * width + (iy + 0.5) * dy
+                ox = cx + c * x_local - s * y_local
+                oy = cy + s * x_local + c * y_local
+                self._obstacles.append((ox, oy, max(r, OBSTACLE_RADIUS)))

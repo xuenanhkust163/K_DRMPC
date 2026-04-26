@@ -7,7 +7,7 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from matplotlib.patches import Circle
+from matplotlib.patches import Circle, Polygon
 import os
 import sys
 
@@ -82,7 +82,27 @@ def plot_trajectory_comparison(results, track, title="Trajectory Comparison",
     ax.plot(right_x, right_y, '-', color='#444444', linewidth=1.2, alpha=0.8)
     ax.plot(cx, cy, '--', color='gray', linewidth=1.5, alpha=0.6, label='Track centerline')
 
-    # Plot obstacles
+    # Plot rectangular obstacles first (if track provides them)
+    rect_obstacles = track.get_rect_obstacles() if hasattr(track, 'get_rect_obstacles') else []
+    for i, (cx_r, cy_r, length, width, angle) in enumerate(rect_obstacles):
+        c = np.cos(angle)
+        s = np.sin(angle)
+        hl = 0.5 * length
+        hw = 0.5 * width
+        local_corners = np.array([
+            [-hl, -hw],
+            [hl, -hw],
+            [hl, hw],
+            [-hl, hw],
+        ])
+        rot = np.array([[c, -s], [s, c]])
+        corners = (local_corners @ rot.T) + np.array([cx_r, cy_r])
+        poly = Polygon(corners, closed=True, facecolor='red', edgecolor='darkred',
+                       linewidth=1.2, alpha=0.25, zorder=2)
+        ax.add_patch(poly)
+        ax.annotate(f'Rect {i+1}', (cx_r, cy_r), fontsize=8, ha='center', va='center')
+
+    # Plot obstacles (circular approximation used by controller)
     obstacles = track.get_obstacles()
     for i, (ox, oy, r) in enumerate(obstacles):
         # Obstacle body

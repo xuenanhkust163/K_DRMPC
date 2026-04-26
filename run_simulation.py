@@ -116,6 +116,13 @@ def parse_cli_args():
         default=1,
         help="控制降频：每N个仿真步求解一次MPC，中间保持上次控制。",
     )
+    parser.add_argument(
+        "--obstacle-strategy",
+        type=str,
+        choices=("robust", "non-robust"),
+        default="robust",
+        help="障碍约束策略：robust=CVaR鲁棒约束，non-robust=确定性距离约束。",
+    )
     return parser.parse_args()
 
 
@@ -237,7 +244,8 @@ def run_all_methods_on_track(track, model, D, norm_params, dist_gen,
                              detailed_step_log=False,
                              detailed_step_log_max_steps=None,
                              cost_profile="default",
-                             control_update_interval=1):
+                             control_update_interval=1,
+                             obstacle_strategy="robust"):
     """
     在单个赛道上运行所有4种MPC方法。
 
@@ -329,7 +337,8 @@ def run_all_methods_on_track(track, model, D, norm_params, dist_gen,
         # 创建K-DRMPC控制器，额外传入经验干扰样本用于构建Wasserstein模糊集
         kdrmpc = KDRMPCController(model, D, norm_params,
                                   disturbance_samples=w_empirical,
-                                  cost_profile=cost_profile)
+                                  cost_profile=cost_profile,
+                                  obstacle_strategy=obstacle_strategy)
         # 运行K-DRMPC仿真并保存结果到"K-DRMPC_{赛道名}.pkl"
         results['K-DRMPC'] = run_single_method('K-DRMPC', track, kdrmpc,
                                                dist_gen, max_steps,
@@ -343,7 +352,8 @@ def run_all_methods_on_track(track, model, D, norm_params, dist_gen,
 
 
 def run_robustness_analysis(track, model, D, norm_params, max_steps=500,
-                            cost_profile="default"):
+                            cost_profile="default",
+                            obstacle_strategy="robust"):
     """
     运行K-DRMPC在不同干扰水平下的鲁棒性分析（论文表11）。
 
@@ -378,7 +388,8 @@ def run_robustness_analysis(track, model, D, norm_params, max_steps=500,
         # 创建K-DRMPC控制器，使用当前sigma的经验样本
         controller = KDRMPCController(model, D, norm_params,
                                        disturbance_samples=w_empirical,
-                                       cost_profile=cost_profile)
+                                       cost_profile=cost_profile,
+                                       obstacle_strategy=obstacle_strategy)
         # 创建仿真器
         simulator = Simulator(track, controller, dist_gen)
         # 运行仿真，verbose=False减少输出（因为要测试多个sigma值）
@@ -393,7 +404,8 @@ def run_robustness_analysis(track, model, D, norm_params, max_steps=500,
 
 
 def run_sensitivity_theta(track, model, D, norm_params, dist_gen, max_steps=500,
-                          cost_profile="default"):
+                          cost_profile="default",
+                          obstacle_strategy="robust"):
     """
     运行K-DRMPC在不同theta值下的敏感性分析（论文表14）。
 
@@ -430,7 +442,8 @@ def run_sensitivity_theta(track, model, D, norm_params, dist_gen, max_steps=500,
         controller = KDRMPCController(model, D, norm_params,
                                        disturbance_samples=w_empirical,
                                        theta=theta,
-                                       cost_profile=cost_profile)
+                                       cost_profile=cost_profile,
+                                       obstacle_strategy=obstacle_strategy)
         # 创建仿真器
         simulator = Simulator(track, controller, dist_gen)
         # 运行仿真
@@ -445,7 +458,8 @@ def run_sensitivity_theta(track, model, D, norm_params, dist_gen, max_steps=500,
 
 
 def run_sensitivity_epsilon(track, model, D, norm_params, dist_gen, max_steps=500,
-                            cost_profile="default"):
+                            cost_profile="default",
+                            obstacle_strategy="robust"):
     """
     运行K-DRMPC在不同epsilon值下的敏感性分析（论文表15）。
 
@@ -482,7 +496,8 @@ def run_sensitivity_epsilon(track, model, D, norm_params, dist_gen, max_steps=50
         controller = KDRMPCController(model, D, norm_params,
                                        disturbance_samples=w_empirical,
                                        epsilon=epsilon,
-                                       cost_profile=cost_profile)
+                                       cost_profile=cost_profile,
+                                       obstacle_strategy=obstacle_strategy)
         # 创建仿真器
         simulator = Simulator(track, controller, dist_gen)
         # 运行仿真
@@ -534,7 +549,8 @@ def main():
     print(
         f"配置: detailed_step_log={detailed_step_log}, "
         f"max_steps={sim_max_steps}, cost_profile={args.cost_profile}, "
-        f"control_every={args.control_every}"
+        f"control_every={args.control_every}, "
+        f"obstacle_strategy={args.obstacle_strategy}"
     )
 
     # ================================================================
@@ -589,6 +605,7 @@ def main():
             detailed_step_log_max_steps=DETAILED_STEP_LOG_MAX_STEPS,
             cost_profile=args.cost_profile,
             control_update_interval=args.control_every,
+            obstacle_strategy=args.obstacle_strategy,
         )
     else:
         print("[Skip] 短圈Lusail赛道已禁用（ENABLE_SHORT_LUSAIL_TRACK=False）")
@@ -604,6 +621,7 @@ def main():
             detailed_step_log_max_steps=DETAILED_STEP_LOG_MAX_STEPS,
             cost_profile=args.cost_profile,
             control_update_interval=args.control_every,
+            obstacle_strategy=args.obstacle_strategy,
         )
 
     # ================================================================
@@ -623,7 +641,8 @@ def main():
             detailed_step_log=detailed_step_log,
             detailed_step_log_max_steps=DETAILED_STEP_LOG_MAX_STEPS,
             cost_profile=args.cost_profile,
-            control_update_interval=args.control_every)
+            control_update_interval=args.control_every,
+            obstacle_strategy=args.obstacle_strategy)
 
     # ================================================================
     # 步骤6：可选分析（默认关闭）
@@ -635,7 +654,8 @@ def main():
         print("#" * 60)
         run_robustness_analysis(short_lusail, model, D, norm_params,
                     max_steps=min(500, sim_max_steps),
-                    cost_profile=args.cost_profile)
+                    cost_profile=args.cost_profile,
+                    obstacle_strategy=args.obstacle_strategy)
     else:
         print("\n[Skip] 鲁棒性分析已禁用（ENABLE_ROBUSTNESS_ANALYSIS=False）")
 
@@ -646,7 +666,8 @@ def main():
         print("#" * 60)
         run_sensitivity_theta(short_lusail, model, D, norm_params, dist_gen,
                               max_steps=min(500, sim_max_steps),
-                              cost_profile=args.cost_profile)
+                              cost_profile=args.cost_profile,
+                              obstacle_strategy=args.obstacle_strategy)
 
         # 敏感性分析 - epsilon（论文表15）
         print("\n" + "#" * 60)
@@ -654,7 +675,8 @@ def main():
         print("#" * 60)
         run_sensitivity_epsilon(short_lusail, model, D, norm_params, dist_gen,
                                 max_steps=min(500, sim_max_steps),
-                                cost_profile=args.cost_profile)
+                                cost_profile=args.cost_profile,
+                                obstacle_strategy=args.obstacle_strategy)
     else:
         print("[Skip] 敏感性分析已禁用（ENABLE_SENSITIVITY_ANALYSIS=False）")
 

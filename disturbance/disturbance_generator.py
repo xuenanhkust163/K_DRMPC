@@ -25,7 +25,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # 从配置文件导入干扰相关参数
 from config import (
     N_W,  # 干扰维度，默认为5 [w_px, w_py, w_v, w_psi, w_omega]
-    N_DISTURBANCE_SAMPLES  # 干扰样本数量，默认100，用于构建Wasserstein模糊集
+    N_DISTURBANCE_SAMPLES,  # 干扰样本数量，默认100，用于构建Wasserstein模糊集
+    ENABLE_DISTURBANCE,
 )
 
 
@@ -130,6 +131,9 @@ class DisturbanceGenerator:
                       每一行是一个5维干扰向量
                       例如：w_samples[0] = [w_px, w_py, w_v, w_psi, w_omega]
         """
+        if not ENABLE_DISTURBANCE:
+            return np.zeros((n_samples, N_W))
+
         # 初始化样本数组，全部为零
         # 形状：(n_samples, N_W) = (100, 5)
         w_samples = np.zeros((n_samples, N_W))
@@ -167,6 +171,9 @@ class DisturbanceGenerator:
             w: numpy数组，形状为(N_W,) = (5,)
                单个5维干扰向量 [w_px, w_py, w_v, w_psi, w_omega]
         """
+        if not ENABLE_DISTURBANCE:
+            return np.zeros(N_W)
+
         # 步骤1：根据权重随机选择一个高斯分量
         k = self.rng.choice(self.n_components, p=self.weights)
 
@@ -202,6 +209,9 @@ class DisturbanceGenerator:
                         固定的经验样本集，用于分布鲁棒优化
                         例如：(100, 5)表示100个5维干扰样本
         """
+        if not ENABLE_DISTURBANCE:
+            return np.zeros((n_samples, N_W))
+
         # 使用独立的随机数生成器以保证可实现性
         # 固定种子为0，确保结果完全可复现
         # 这个生成器不受self.rng的影响，保证了经验样本的稳定性
