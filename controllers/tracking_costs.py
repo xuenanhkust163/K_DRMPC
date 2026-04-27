@@ -95,9 +95,43 @@ class DefaultTrackingCostBuilder:
 
         return stage
 
-    def finalize_cost(self, **_ctx):
-        """Optional horizon-level term hook (default no-op)."""
-        return 0
+    def finalize_cost(self, **ctx):
+        """Optional horizon-level terminal anchor for heading and position."""
+        z_terminal = ctx.get("z_terminal")
+        if z_terminal is None:
+            return 0
+
+        terminal_cost = 0
+
+        terminal_heading_weight = float(ctx.get("terminal_heading_weight", 0.0))
+        ref_psi_terminal = ctx.get("ref_psi_terminal")
+        d_psi_ca = ctx.get("d_psi_ca")
+        if terminal_heading_weight > 0.0 and ref_psi_terminal is not None and d_psi_ca is not None:
+            psi_terminal = ca.mtimes(d_psi_ca, z_terminal)[0]
+            psi_err_terminal = ca.atan2(
+                ca.sin(psi_terminal - float(ref_psi_terminal)),
+                ca.cos(psi_terminal - float(ref_psi_terminal)),
+            )
+            terminal_cost += terminal_heading_weight * (psi_err_terminal ** 2)
+
+        terminal_pos_weight = float(ctx.get("terminal_pos_weight", 0.0))
+        ref_px_norm_terminal = ctx.get("ref_px_norm_terminal")
+        ref_py_norm_terminal = ctx.get("ref_py_norm_terminal")
+        d_pos_ca = ctx.get("d_pos_ca")
+        if (
+            terminal_pos_weight > 0.0
+            and ref_px_norm_terminal is not None
+            and ref_py_norm_terminal is not None
+            and d_pos_ca is not None
+        ):
+            pos_terminal = ca.mtimes(d_pos_ca, z_terminal)
+            pos_err_x_terminal = pos_terminal[0] - float(ref_px_norm_terminal)
+            pos_err_y_terminal = pos_terminal[1] - float(ref_py_norm_terminal)
+            terminal_cost += terminal_pos_weight * (
+                pos_err_x_terminal ** 2 + pos_err_y_terminal ** 2
+            )
+
+        return terminal_cost
 
     def collect_stage_diagnostics(self, diag_terms, **ctx):
         """Collect symbolic stage diagnostics for later numeric evaluation."""
@@ -428,11 +462,11 @@ TRACKING_COST_PROFILES = {
     "default": DefaultTrackingCostBuilder,
     # 更强调中心线/姿态/平滑，抑制过度激进推进。
     "tracking-first": lambda: WeightedTrackingCostBuilder(
-        q_psi_scale=1.6,
-        q_progress_scale=0.75,
-        q_pos_scale=1.4,
-        du_scale=1.2,
-        abs_u_scale=1.2,
+        q_psi_scale=3.0,
+        q_progress_scale=0.05,
+        q_pos_scale=9.0,
+        du_scale=2.0,
+        abs_u_scale=1.8,
     ),
     # 更强调前进效率，适度放松位置/平滑保守性。
     "progress-first": lambda: WeightedTrackingCostBuilder(
@@ -446,6 +480,16 @@ TRACKING_COST_PROFILES = {
     "mpcc-paper": MPCCPaperCostBuilder,
     # 在mpcc-paper上增加尾部风险项：E[J] + lambda * CVaR_alpha(loss)
     "mpcc-paper-cvar": MPCCPaperCVARCostBuilder,
+    # 稳定优先：强contour/lag与姿态，极弱进度项，避免大偏航后继续“硬推前进”。
+    "stabilize-first": lambda: MPCCPaperCostBuilder(
+        q_contour=22.0,
+        q_lag=6.0,
+        q_speed=0.6,
+        q_heading_scale=2.0,
+        q_progress_scale=0.05,
+        du_scale=1.8,
+        abs_u_scale=1.8,
+    ),
 }
 
 

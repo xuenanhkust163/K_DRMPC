@@ -43,6 +43,65 @@ python run_simulation.py    # 运行仿真
 python run_analysis.py      # 生成图表和表格
 ```
 
+### 4. 单次仿真示例（全参数显式）
+
+在 Lusail Short 赛道跑 100 步、开启障碍物，并将所有参数显式指定：
+
+```bash
+cd /Users/nevinxue/source/K_DRMPC && .venv/bin/python run_simulation.py \
+  --track lusail-short \
+  --steps 100 \
+  --cost-profile default \
+  --control-every 1 \
+  --obstacle-strategy robust \
+  --delta-max 2.5 \
+  --delta-rate-max 0.05 \
+  --speed-scale 0.18 \
+  --horizon 40 \
+  --theta 0.05 \
+  --epsilon 0.1 \
+  --obstacles \
+  --verbose
+```
+
+常用赛道命令：
+
+```bash
+# Lusail Short（100步，带障碍，详细日志）
+cd /Users/nevinxue/source/K_DRMPC && .venv/bin/python run_simulation.py \
+  --track lusail-short --steps 100 --obstacles --verbose
+
+# Sprint Oval（200步，带障碍，详细日志）
+cd /Users/nevinxue/source/K_DRMPC && .venv/bin/python run_simulation.py \
+  --track sprint-oval --steps 200 --obstacles --verbose
+
+# 原始 Lusail（200步，带障碍，详细日志）
+cd /Users/nevinxue/source/K_DRMPC && .venv/bin/python run_simulation.py \
+  --track lusail --steps 200 --obstacles --verbose
+
+# 全赛道（慎用，耗时更长）
+cd /Users/nevinxue/source/K_DRMPC && .venv/bin/python run_simulation.py \
+  --track all --steps 200 --obstacles --verbose
+```
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--steps` | 最大仿真步数 | 200（示例中显式设为 100） |
+| `--track` | 选择赛道（sprint-oval / lusail-short / lusail / custom / all） | sprint-oval |
+| `--cost-profile` | 代价模板（default / tracking-first / progress-first / mpcc-paper / mpcc-paper-cvar / stabilize-first） | default |
+| `--control-every` | 控制降频，每 N 步求解一次 MPC | 1 |
+| `--obstacle-strategy` | 障碍约束策略（robust / non-robust） | robust |
+| `--delta-max` | 最大转向角 [度] | 2.5 |
+| `--delta-rate-max` | 最大转向角速率 [弧度/秒] | 0.05 |
+| `--speed-scale` | 全局参考速度缩放因子 | 0.18 |
+| `--horizon` | MPC 预测时域步数 | 40 |
+| `--theta` | Wasserstein 球半径 | 0.05 |
+| `--epsilon` | CVaR 风险水平 | 0.1 |
+| `--obstacles` | 开启赛道障碍物 | 关闭 |
+| `--disturbance` | 开启在线扰动 | 关闭 |
+| `--verbose` | 逐步详细日志打印到控制台 | 关闭 |
+| `--fast` | 快速验证模式（固定 300 步） | 关闭 |
+
 ## 项目结构
 
 ```

@@ -48,6 +48,14 @@ from config import (
     EPSILON_CVAR,  # CVaR风险水平，默认0.05（95%置信度）
     IPOPT_MAX_ITER,  # IPOPT求解器最大迭代次数
     IPOPT_PRINT_LEVEL,  # IPOPT求解器打印级别
+    Q_PSI_TRACK,
+    Q_PROGRESS_TRACK,
+    Q_POS_TRACK,
+    POSITION_TERM_INTERVAL,
+    R_ABS_A,
+    R_ABS_DELTA,
+    Q_TERMINAL_HEADING,
+    Q_TERMINAL_POS,
     IDX_PSI,
     IDX_V,
     IDX_OMEGA
@@ -82,11 +90,11 @@ MIN_SPEED_FLOOR = 2.0           # 绝对最低目标速度 [m/s]
 MIN_SPEED_REF_RATIO = 0.25      # 参考速度下限比例
 MIN_SPEED_SLACK_PENALTY = 1200.0  # 速度下限松弛惩罚（软调优）
 # 航向角跟踪权重：增强“沿参考方向前进”的方向感
-Q_PSI = 2.0
+Q_PSI = Q_PSI_TRACK
 # 前向进度权重：显式鼓励沿参考切向前进
-Q_PROGRESS = 8.0
+Q_PROGRESS = Q_PROGRESS_TRACK
 # 绝对控制量惩罚（软约束）：抑制长期满刹和满舵
-R_ABS_WEIGHTS = np.diag([0.8, 0.6])
+R_ABS_WEIGHTS = np.diag([R_ABS_A, R_ABS_DELTA])
 
 
 class KDRMPCController:
@@ -366,7 +374,7 @@ class KDRMPCController:
         cost += TRACK_BOUNDARY_SLACK_PENALTY * ca.dot(track_slack, track_slack)
 
         # Position tracking weight (decoded position vs reference)
-        Q_pos = 0.5
+        Q_pos = Q_POS_TRACK
 
         # Normalize reference positions for decoder comparison
         ref_px_norm = np.array([(ref_trajectory[min(t, len(ref_trajectory)-1), 0]
@@ -381,6 +389,8 @@ class KDRMPCController:
         ])
         # 终端约束也需要参考航向
         ref_psi_terminal = float(ref_trajectory[min(T - 1, len(ref_trajectory) - 1), IDX_PSI])
+        ref_px_norm_terminal = float(ref_px_norm[T - 1])
+        ref_py_norm_terminal = float(ref_py_norm[T - 1])
 
         px_std = float(self.norm_params['px_std'])
         py_std = float(self.norm_params['py_std'])
@@ -418,7 +428,7 @@ class KDRMPCController:
                 q_psi=Q_PSI,
                 q_progress=Q_PROGRESS,
                 q_pos=Q_pos,
-                add_position_term=(t % 4 == 0),
+                add_position_term=(t % POSITION_TERM_INTERVAL == 0),
                 add_abs_u_term=True,
                 r_abs=R_abs,
                 min_speed_rule=min_speed_rule,
@@ -445,7 +455,7 @@ class KDRMPCController:
                 q_psi=Q_PSI,
                 q_progress=Q_PROGRESS,
                 q_pos=Q_pos,
-                add_position_term=(t % 4 == 0),
+                add_position_term=(t % POSITION_TERM_INTERVAL == 0),
                 add_abs_u_term=True,
                 r_abs=R_abs,
                 min_speed_rule=min_speed_rule,
@@ -459,6 +469,14 @@ class KDRMPCController:
             horizon=T,
             risk_terms=risk_terms,
             diag_terms=diag_terms,
+            z_terminal=Z[T],
+            ref_psi_terminal=ref_psi_terminal,
+            ref_px_norm_terminal=ref_px_norm_terminal,
+            ref_py_norm_terminal=ref_py_norm_terminal,
+            d_pos_ca=self._D_pos_ca,
+            d_psi_ca=self._D_psi_ca,
+            terminal_heading_weight=Q_TERMINAL_HEADING,
+            terminal_pos_weight=Q_TERMINAL_POS,
         )
 
         # === Input Constraints ===

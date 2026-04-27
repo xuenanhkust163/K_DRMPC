@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 from scipy.interpolate import CubicSpline
 from config import (
     IDX_PX, IDX_PY, IDX_PSI, IDX_V, IDX_OMEGA,
-    A_LAT_MAX, V_MAX, REF_SPEED_SCALE, ENABLE_OBSTACLES,
+    A_LAT_MAX, V_MAX, REF_SPEED_SCALE, REF_ACCEL_MAX, REF_DECEL_MAX, ENABLE_OBSTACLES,
 )
 
 
@@ -90,7 +90,10 @@ class BaseTrack(ABC):
         return idx, self._arc_length[idx], lateral_error
 
     def get_reference_trajectory(self, start_idx, horizon, v_ref=None,
-                                 a_lat_max=A_LAT_MAX, v_max=V_MAX):
+                                 a_lat_max=A_LAT_MAX, v_max=V_MAX,
+                                 current_speed=None,
+                                 accel_limit=REF_ACCEL_MAX,
+                                 decel_limit=REF_DECEL_MAX):
         """
         Generate reference trajectory for MPC.
 
@@ -106,9 +109,12 @@ class BaseTrack(ABC):
         """
         ref = np.zeros((horizon, 5))
         N = self._num_points
+        idx_sequence = []
+        target_speeds = np.zeros(horizon)
 
         for t in range(horizon):
             idx = (start_idx + t) % N
+            idx_sequence.append(idx)
             ref[t, IDX_PX] = self._centerline_x[idx]  # px
             ref[t, IDX_PY] = self._centerline_y[idx]  # py
             ref[t, IDX_PSI] = self._heading[idx]      # psi
@@ -116,12 +122,40 @@ class BaseTrack(ABC):
             # Speed from curvature
             kappa = abs(self._curvature[idx])
             if v_ref is not None:
-                ref[t, IDX_V] = REF_SPEED_SCALE * v_ref
+                target_speeds[t] = REF_SPEED_SCALE * v_ref
             elif kappa > 1e-6:
-                ref[t, IDX_V] = REF_SPEED_SCALE * min(v_max, np.sqrt(a_lat_max / kappa))
+                target_speeds[t] = REF_SPEED_SCALE * min(v_max, np.sqrt(a_lat_max / kappa))
             else:
-                ref[t, IDX_V] = REF_SPEED_SCALE * v_max
+                target_speeds[t] = REF_SPEED_SCALE * v_max
 
+        if current_speed is None:
+            speed_profile = target_speeds.copy()
+        else:
+            speed_profile = np.zeros(horizon)
+            speed_profile[0] = float(np.clip(current_speed, 0.0, v_max))
+
+            # Forward pass: acceleration-limited growth toward curvature-limited target speed.
+            for t in range(1, horizon):
+                prev_idx = idx_sequence[t - 1]
+                idx = idx_sequence[t]
+                ds = self._arc_length[idx] - self._arc_length[prev_idx]
+                if ds < 0:
+                    ds += self._total_length
+                v_reachable = np.sqrt(max(speed_profile[t - 1] ** 2 + 2.0 * accel_limit * max(ds, 0.0), 0.0))
+                speed_profile[t] = min(target_speeds[t], v_reachable)
+
+            # Backward pass: deceleration-limited slowdown for upcoming curvature.
+            for t in range(horizon - 2, -1, -1):
+                idx = idx_sequence[t]
+                next_idx = idx_sequence[t + 1]
+                ds = self._arc_length[next_idx] - self._arc_length[idx]
+                if ds < 0:
+                    ds += self._total_length
+                v_brake_cap = np.sqrt(max(speed_profile[t + 1] ** 2 + 2.0 * decel_limit * max(ds, 0.0), 0.0))
+                speed_profile[t] = min(speed_profile[t], v_brake_cap)
+
+        for t, idx in enumerate(idx_sequence):
+            ref[t, IDX_V] = speed_profile[t]
             ref[t, IDX_OMEGA] = ref[t, IDX_V] * self._curvature[idx]  # omega = v * kappa
 
         return ref
@@ -134,7 +168,7 @@ class BaseTrack(ABC):
             y_ref: (horizon, 2) reference [v, omega]
         """
         ref = self.get_reference_trajectory(start_idx, horizon,
-                                            a_lat_max=a_lat_max, v_max=v_max)
+                            a_lat_max=a_lat_max, v_max=v_max)
         return ref[:, [IDX_V, IDX_OMEGA]]  # [v, omega]
 
     def _compute_geometry(self, x, y):

@@ -7,6 +7,7 @@ import time  # 导入时间模块，用于计时
 import os  # 导入操作系统接口模块
 import sys  # 导入系统模块，用于路径操作
 import pickle  # 导入pickle模块，用于对象的序列化和反序列化
+import subprocess
 from collections import Counter
 
 # 将父目录添加到系统路径，以便导入项目模块
@@ -18,6 +19,7 @@ from config import (
     IDX_PX, IDX_PY, IDX_PSI, IDX_V, IDX_OMEGA,
     CONTROL_UPDATE_INTERVAL,
     TRACK_HALF_WIDTH, VEHICLE_RADIUS,
+    EXPORT_STATIC_FIGURES, EXPORT_ANIMATION, ANIMATION_FPS,
 )
 # 从自行车模型模块导入离散时间步长函数
 from vehicle.bicycle_model import discrete_step
@@ -157,7 +159,7 @@ class Simulator:
 
             # 获取参考轨迹
             from config import T_HORIZON  # 导入预测时域
-            ref = track.get_reference_trajectory(idx, T_HORIZON)  # 获取从当前索引开始的预测时域内的参考轨迹
+            ref = track.get_reference_trajectory(idx, T_HORIZON, current_speed=x[IDX_V])  # 获取从当前索引开始的预测时域内的参考轨迹
 
             # 求解MPC优化问题；若开启降频，则在中间步保持上一次控制
             should_solve = (step % control_update_interval == 0)
@@ -483,13 +485,17 @@ class Simulator:
 
     @staticmethod
     def _export_result_debug_summary(result, output_path, top_k=5):
-        """Export a concise debug summary for quick diagnosis."""
+        """Append a concise debug summary to the end of an existing log."""
         summary = Simulator._summarize_debug_diagnostics(result, top_k=top_k)
         if summary is None:
             return False
 
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        with open(output_path, 'w') as f:
+        with open(output_path, 'a') as f:
+            f.write("\n")
+            f.write("=" * 80 + "\n")
+            f.write("DEBUG SUMMARY\n")
+            f.write("=" * 80 + "\n")
             f.write(f"method={result.method_name}\n")
             f.write(f"track={result.track_name}\n")
             f.write(f"total_steps={result.total_steps}\n\n")
@@ -529,6 +535,9 @@ class Simulator:
         if track_name == 'CustomWindingTrack':
             from tracks.custom_track import CustomWindingTrack
             return CustomWindingTrack()
+        if track_name == 'SprintOvalTrack':
+            from tracks.sprint_oval_track import SprintOvalTrack
+            return SprintOvalTrack()
         return None
 
     @staticmethod
@@ -572,6 +581,32 @@ class Simulator:
         ]
 
     @staticmethod
+    def _export_result_animation(result_path, base_name):
+        """Export per-result animation GIF using visualization/animate_simulation.py."""
+        output_path = os.path.join(FIGURES_DIR, f"{base_name}_animation.gif")
+        script_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            'visualization',
+            'animate_simulation.py',
+        )
+
+        cmd = [
+            sys.executable,
+            script_path,
+            '--result',
+            result_path,
+            '--fps',
+            str(int(ANIMATION_FPS)),
+            '--save',
+            output_path,
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            print(f"[Warn] 动画导出失败: {proc.stderr.strip() or proc.stdout.strip()}")
+            return None
+        return output_path
+
+    @staticmethod
     def save_result(result, filename=None, save_dir=RESULTS_DIR):
         """
         将仿真结果保存到磁盘。
@@ -590,16 +625,16 @@ class Simulator:
         base_name = os.path.splitext(os.path.basename(path))[0]
         log_dir = os.path.join(save_dir, 'logs')
         step_log_path = os.path.join(log_dir, f"{base_name}.log")
-        debug_summary_path = os.path.join(log_dir, f"{base_name}.debug_summary.log")
         Simulator._export_result_to_step_log(result, step_log_path)
-        exported_debug_summary = Simulator._export_result_debug_summary(result, debug_summary_path)
-        figure_paths = Simulator._export_result_figures(result, base_name)
+        Simulator._export_result_debug_summary(result, step_log_path)
+        figure_paths = Simulator._export_result_figures(result, base_name) if EXPORT_STATIC_FIGURES else []
+        animation_path = Simulator._export_result_animation(path, base_name) if EXPORT_ANIMATION else None
         print(f"结果已保存到 {path}")
         print(f"报表链接: {step_log_path}")
-        if exported_debug_summary:
-            print(f"报表链接: {debug_summary_path}")
         for figure_path in figure_paths:
             print(f"图片链接: {figure_path}")
+        if animation_path:
+            print(f"动画链接: {animation_path}")
 
     @staticmethod
     def load_result(filepath):

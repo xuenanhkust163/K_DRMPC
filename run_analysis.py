@@ -188,13 +188,17 @@ def summarize_debug_diagnostics(result, top_k=5):
 
 
 def export_result_debug_summary(result, output_path, top_k=5):
-    """Export a concise debug summary for quick diagnosis."""
+    """Append a concise debug summary to the end of an existing log."""
     summary = summarize_debug_diagnostics(result, top_k=top_k)
     if summary is None:
         return False
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    with open(output_path, 'w') as f:
+    with open(output_path, 'a') as f:
+        f.write("\n")
+        f.write("=" * 80 + "\n")
+        f.write("DEBUG SUMMARY\n")
+        f.write("=" * 80 + "\n")
         f.write(f"method={result.method_name}\n")
         f.write(f"track={result.track_name}\n")
         f.write(f"total_steps={result.total_steps}\n\n")
@@ -229,14 +233,11 @@ def export_all_result_logs(results_dir=RESULTS_DIR):
         base_name = os.path.splitext(os.path.basename(pkl_path))[0]
         log_path = os.path.join(log_dir, f"{base_name}.log")
         compact_log_path = os.path.join(log_dir, f"{base_name}.compact.log")
-        debug_summary_path = os.path.join(log_dir, f"{base_name}.debug_summary.log")
         export_result_to_step_log(result, log_path)
         export_result_to_compact_log(result, compact_log_path)
-        exported_debug_summary = export_result_debug_summary(result, debug_summary_path)
+        export_result_debug_summary(result, log_path)
         print(f"  Step log exported: {log_path}")
         print(f"  Compact log exported: {compact_log_path}")
-        if exported_debug_summary:
-            print(f"  Debug summary exported: {debug_summary_path}")
 
 
 def load_results(track_name, methods=None):

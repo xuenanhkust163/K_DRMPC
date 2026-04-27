@@ -41,6 +41,12 @@ from config import (
     VEHICLE_RADIUS,  # 车辆半径 [米]
     IPOPT_MAX_ITER,  # IPOPT求解器最大迭代次数
     IPOPT_PRINT_LEVEL,  # IPOPT求解器打印级别
+    Q_PSI_TRACK,
+    Q_PROGRESS_TRACK,
+    Q_POS_TRACK,
+    POSITION_TERM_INTERVAL,
+    Q_TERMINAL_HEADING,
+    Q_TERMINAL_POS,
     IDX_PSI,
     IDX_V,
     IDX_OMEGA
@@ -62,9 +68,9 @@ OBSTACLE_PROXIMITY = 200.0  # 单位：米
 # 较大的值会强制满足障碍物约束，但可能导致问题不可解
 OBSTACLE_SLACK_PENALTY = 1000.0
 # 航向角跟踪权重：增强“沿参考方向前进”的方向感
-Q_PSI = 2.0
+Q_PSI = Q_PSI_TRACK
 # 前向进度权重：显式鼓励沿参考切向前进
-Q_PROGRESS = 3.0
+Q_PROGRESS = Q_PROGRESS_TRACK
 
 
 class KMPCController:
@@ -314,7 +320,7 @@ class KMPCController:
 
         # 位置跟踪权重
         # 用于平衡[v, omega]跟踪和位置跟踪的重要性
-        Q_pos = 0.5
+        Q_pos = Q_POS_TRACK
 
         # 对参考轨迹的位置进行归一化
         # 用于与解码器输出（归一化空间）进行比较
@@ -334,6 +340,9 @@ class KMPCController:
             ref_trajectory[min(t, len(ref_trajectory)-1), IDX_PSI]
             for t in range(T)
         ])
+        ref_psi_terminal = float(ref_trajectory[min(T - 1, len(ref_trajectory) - 1), IDX_PSI])
+        ref_px_norm_terminal = float(ref_px_norm[T - 1])
+        ref_py_norm_terminal = float(ref_py_norm[T - 1])
 
         # 可选的风险项容器：某些builder会在其中追加每步损失用于CVaR等尾部项
         risk_terms = []
@@ -361,7 +370,7 @@ class KMPCController:
                 q_psi=Q_PSI,
                 q_progress=Q_PROGRESS,
                 q_pos=Q_pos,
-                add_position_term=(t % 4 == 0),
+                add_position_term=(t % POSITION_TERM_INTERVAL == 0),
                 risk_terms=risk_terms,
             )
 
@@ -370,6 +379,14 @@ class KMPCController:
             opti=opti,
             horizon=T,
             risk_terms=risk_terms,
+            z_terminal=Z[T],
+            ref_psi_terminal=ref_psi_terminal,
+            ref_px_norm_terminal=ref_px_norm_terminal,
+            ref_py_norm_terminal=ref_py_norm_terminal,
+            d_pos_ca=self._D_pos_ca,
+            d_psi_ca=self._D_psi_ca,
+            terminal_heading_weight=Q_TERMINAL_HEADING,
+            terminal_pos_weight=Q_TERMINAL_POS,
         )
 
         # ================================================================

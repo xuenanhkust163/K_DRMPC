@@ -20,6 +20,7 @@ import os  # 导入操作系统接口模块，用于文件和路径操作
 import sys  # 导入系统模块，用于修改Python路径
 import json  # 导入JSON模块，用于读取模型参数文件
 import argparse  # 导入命令行参数解析模块
+import shutil  # 导入文件操作模块，用于清理旧输出目录
 import torch  # noqa: F401  # 导入PyTorch深度学习框架（模型推理时需要）
 import numpy as np  # noqa: F401  # 导入NumPy库（数值计算需要）
 
@@ -27,10 +28,14 @@ import numpy as np  # noqa: F401  # 导入NumPy库（数值计算需要）
 # os.path.dirname(os.path.abspath(__file__)) 获取当前脚本所在目录的绝对路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# 导入config模块本身，供运行时覆盖使用
+import config as _config_module  # noqa: F401
+
 # 从配置文件导入各种常量和参数
 from config import (  # noqa: F401  # THETA_WASSERSTEIN和EPSILON_CVAR在其他地方使用
     MODEL_DIR,  # 模型保存目录路径，包含训练好的模型文件
     RESULTS_DIR,  # 仿真结果保存目录路径
+    FIGURES_DIR,  # 图表保存目录路径
     N_DISTURBANCE_SAMPLES,  # 干扰样本数量，用于构建Wasserstein模糊集
     SIGMA_VALUES,  # 噪声标准差测试值列表，用于鲁棒性分析
     THETA_VALUES,  # Wasserstein半径测试值列表，用于敏感性分析
@@ -47,6 +52,8 @@ from model.projection import load_projection_matrix  # 加载投影矩阵D函数
 from tracks.lusail_track import LusailTrack  # 卢赛尔赛道类（真实赛道，用于主要实验）
 from tracks.lusail_short_track import LusailShortTrack  # 短圈Lusail风格赛道（快速验证）
 from tracks.custom_track import CustomWindingTrack  # 自定义弯道赛道类（用于验证泛化能力）
+from tracks.sprint_oval_track import SprintOvalTrack  # 超短平缓测试赛道（用于快速闭环验证）
+from tracks.straight_track import StraightTrack  # 笔直长直道测试赛道（用于基础跟踪验证）
 # 从控制器模块导入4种MPC控制器
 from controllers.lmpc_controller import LMPCController  # 线性MPC控制器（基于线性化模型）
 from controllers.nmpc_controller import NMPCController  # 非线性MPC控制器（基于完整非线性模型）
@@ -64,9 +71,9 @@ ENABLE_SENSITIVITY_ANALYSIS = False
 # 方法开关：默认仅运行本文方法 K-DRMPC
 ENABLE_BASELINE_METHODS = False
 ENABLE_OUR_METHOD_KDRMPC = True
-# 赛道开关：默认仅运行Lusail赛道
+# 赛道开关：默认仅运行超短Lusail验证赛道
 ENABLE_CUSTOM_TRACK = False
-# 主赛道开关：默认改跑短圈Lusail
+# 主赛道开关：默认改跑超短Lusail
 ENABLE_SHORT_LUSAIL_TRACK = True
 ENABLE_ORIGINAL_LUSAIL_TRACK = False
 # 逐步详细日志默认开关（恢复为默认开启，可被命令行参数覆盖）
@@ -79,6 +86,15 @@ COST_PROFILE_CHOICES = (
     "progress-first",
     "mpcc-paper",
     "mpcc-paper-cvar",
+    "stabilize-first",
+)
+TRACK_CHOICES = (
+    "sprint-oval",
+    "lusail-short",
+    "lusail",
+    "custom",
+    "straight",
+    "all",
 )
 
 
@@ -108,7 +124,7 @@ def parse_cli_args():
         type=str,
         choices=COST_PROFILE_CHOICES,
         default="default",
-        help="K系控制器代价模板：default / tracking-first / progress-first。",
+        help="K系控制器代价模板：default / tracking-first / progress-first / mpcc-paper / mpcc-paper-cvar / stabilize-first。",
     )
     parser.add_argument(
         "--control-every",
@@ -123,7 +139,125 @@ def parse_cli_args():
         default="robust",
         help="障碍约束策略：robust=CVaR鲁棒约束，non-robust=确定性距离约束。",
     )
+    parser.add_argument(
+        "--delta-max",
+        type=float,
+        default=None,
+        metavar="DEG",
+        help="最大转向角 [度]，覆盖config.DELTA_MAX（例：--delta-max 3.0）。",
+    )
+    parser.add_argument(
+        "--delta-rate-max",
+        type=float,
+        default=None,
+        metavar="RAD_S",
+        help="最大转向角速率 [弧度/秒]，覆盖config.DELTA_RATE_MAX（例：--delta-rate-max 0.1）。",
+    )
+    parser.add_argument(
+        "--speed-scale",
+        type=float,
+        default=None,
+        metavar="SCALE",
+        help="全局参考速度缩放因子，覆盖config.REF_SPEED_SCALE（例：--speed-scale 0.3）。",
+    )
+    parser.add_argument(
+        "--horizon",
+        type=int,
+        default=None,
+        metavar="N",
+        help="MPC预测时域步数，覆盖config.T_HORIZON（例：--horizon 20）。",
+    )
+    parser.add_argument(
+        "--disturbance",
+        action="store_true",
+        help="开启在线扰动（覆盖config.ENABLE_DISTURBANCE=True）。",
+    )
+    parser.add_argument(
+        "--theta",
+        type=float,
+        default=None,
+        metavar="THETA",
+        help="Wasserstein球半径，覆盖config.THETA_WASSERSTEIN（例：--theta 0.05）。",
+    )
+    parser.add_argument(
+        "--epsilon",
+        type=float,
+        default=None,
+        metavar="EPS",
+        help="CVaR风险水平，覆盖config.EPSILON_CVAR（例：--epsilon 0.1）。",
+    )
+    parser.add_argument(
+        "--obstacles",
+        action="store_true",
+        help="开启赛道上的障碍物（覆盖config.ENABLE_OBSTACLES=True）。",
+    )
+    parser.add_argument(
+        "--track",
+        type=str,
+        choices=TRACK_CHOICES,
+        default="sprint-oval",
+        help="选择运行赛道：sprint-oval / lusail-short / lusail / custom / straight / all。",
+    )
     return parser.parse_args()
+
+
+def _apply_config_overrides(args):
+    """将CLI参数覆盖到config模块及所有已导入的依赖模块中。
+
+    由于Python的 `from config import X` 在导入时绑定值，
+    覆盖config模块属性后还需同步修补各控制器/赛道模块的命名空间。
+    """
+    overrides = {}
+
+    if args.delta_max is not None:
+        overrides['DELTA_MAX'] = np.deg2rad(args.delta_max)
+    if args.delta_rate_max is not None:
+        overrides['DELTA_RATE_MAX'] = float(args.delta_rate_max)
+    if args.horizon is not None:
+        if args.horizon <= 0:
+            raise ValueError("--horizon 必须为正整数")
+        overrides['T_HORIZON'] = args.horizon
+    if args.speed_scale is not None:
+        if args.speed_scale <= 0:
+            raise ValueError("--speed-scale 必须为正数")
+        overrides['REF_SPEED_SCALE'] = float(args.speed_scale)
+    if args.disturbance:
+        overrides['ENABLE_DISTURBANCE'] = True
+    if args.obstacles:
+        overrides['ENABLE_OBSTACLES'] = True
+
+    if not overrides:
+        return
+
+    # 1. 修补 config 模块本身
+    for key, val in overrides.items():
+        setattr(_config_module, key, val)
+
+    # 2. 修补所有已导入且含这些名称的子模块
+    _PATCH_TARGETS = [
+        'controllers.kdrmpc_controller',
+        'controllers.kmpc_controller',
+        'controllers.lmpc_controller',
+        'controllers.mpc_common',
+        'tracks.base_track',
+        'tracks.sprint_oval_track',
+        'tracks.lusail_track',
+        'tracks.custom_track',
+        'disturbance.disturbance_generator',
+    ]
+    for mod_name in _PATCH_TARGETS:
+        mod = sys.modules.get(mod_name)
+        if mod is None:
+            continue
+        for key, val in overrides.items():
+            if hasattr(mod, key):
+                setattr(mod, key, val)
+
+    # 3. 打印覆盖摘要
+    print("[Config Override]", ", ".join(
+        f"{k}={v:.4f}" if isinstance(v, float) else f"{k}={v}"
+        for k, v in overrides.items()
+    ))
 
 
 def print_centerline_following_report(method_name, result, track):
@@ -139,6 +273,9 @@ def print_centerline_following_report(method_name, result, track):
     mean_abs = metrics.get('tracking_error_mean_abs', float('nan'))
     p95_abs = metrics.get('tracking_error_p95_abs', float('nan'))
     max_abs = metrics.get('tracking_error_max', float('nan'))
+    heading_mean_deg = metrics.get('heading_error_mean_abs_deg', float('nan'))
+    heading_p95_deg = metrics.get('heading_error_p95_abs_deg', float('nan'))
+    heading_max_deg = metrics.get('heading_error_max_abs_deg', float('nan'))
     within_1m = metrics.get('tracking_within_1m_pct', float('nan'))
     within_2m = metrics.get('tracking_within_2m_pct', float('nan'))
     offcenter_max_steps = metrics.get('tracking_offcenter_max_steps', 0)
@@ -149,6 +286,9 @@ def print_centerline_following_report(method_name, result, track):
     print(f"  Mean |e_y| = {mean_abs:.3f} m")
     print(f"  P95  |e_y| = {p95_abs:.3f} m")
     print(f"  Max  |e_y| = {max_abs:.3f} m")
+    print(f"  Mean |e_psi| = {heading_mean_deg:.2f} deg")
+    print(f"  P95  |e_psi| = {heading_p95_deg:.2f} deg")
+    print(f"  Max  |e_psi| = {heading_max_deg:.2f} deg")
     print(f"  Within ±1m = {within_1m:.1f}%")
     print(f"  Within ±2m = {within_2m:.1f}%")
     print(f"  Longest consecutive |e_y|>2m steps = {offcenter_max_steps}")
@@ -245,7 +385,9 @@ def run_all_methods_on_track(track, model, D, norm_params, dist_gen,
                              detailed_step_log_max_steps=None,
                              cost_profile="default",
                              control_update_interval=1,
-                             obstacle_strategy="robust"):
+                             obstacle_strategy="robust",
+                             theta=None,
+                             epsilon=None):
     """
     在单个赛道上运行所有4种MPC方法。
 
@@ -335,8 +477,12 @@ def run_all_methods_on_track(track, model, D, norm_params, dist_gen,
         print(f"在 {track.__class__.__name__} 上运行K-DRMPC")
         print(f"{'='*60}")
         # 创建K-DRMPC控制器，额外传入经验干扰样本用于构建Wasserstein模糊集
+        _theta = theta if theta is not None else _config_module.THETA_WASSERSTEIN
+        _epsilon = epsilon if epsilon is not None else _config_module.EPSILON_CVAR
         kdrmpc = KDRMPCController(model, D, norm_params,
                                   disturbance_samples=w_empirical,
+                                  theta=_theta,
+                                  epsilon=_epsilon,
                                   cost_profile=cost_profile,
                                   obstacle_strategy=obstacle_strategy)
         # 运行K-DRMPC仿真并保存结果到"K-DRMPC_{赛道名}.pkl"
@@ -528,7 +674,21 @@ def main():
     所有仿真结果保存到_output/results/目录，用于后续的
     分析和可视化（生成图表和表格）。
     """
+
+    def cleanup_previous_outputs():
+        """启动仿真前清理旧的结果和图表文件。"""
+        cleanup_targets = (RESULTS_DIR, FIGURES_DIR)
+        print("\n--- 清理旧输出（results/figures） ---")
+        for target in cleanup_targets:
+            if os.path.exists(target):
+                shutil.rmtree(target)
+                print(f"已删除目录: {target}")
+            os.makedirs(target, exist_ok=True)
+            print(f"已重建目录: {target}")
+
     args = parse_cli_args()
+    _apply_config_overrides(args)
+    cleanup_previous_outputs()
     if args.control_every <= 0:
         raise ValueError("--control-every 必须为正整数")
     detailed_step_log = ENABLE_DETAILED_STEP_LOG or args.verbose
@@ -542,6 +702,10 @@ def main():
         sim_max_steps = 200
     sim_max_steps = min(sim_max_steps, MAX_SIM_STEPS)
 
+    # 解析theta/epsilon（优先CLI，其次config默认值）
+    theta_val = args.theta if args.theta is not None else _config_module.THETA_WASSERSTEIN
+    epsilon_val = args.epsilon if args.epsilon is not None else _config_module.EPSILON_CVAR
+
     # 打印标题分隔线
     print("=" * 60)
     print("K-DRMPC仿真实验")
@@ -550,7 +714,8 @@ def main():
         f"配置: detailed_step_log={detailed_step_log}, "
         f"max_steps={sim_max_steps}, cost_profile={args.cost_profile}, "
         f"control_every={args.control_every}, "
-        f"obstacle_strategy={args.obstacle_strategy}"
+        f"obstacle_strategy={args.obstacle_strategy}, "
+        f"theta={theta_val}, epsilon={epsilon_val}, track={args.track}"
     )
 
     # ================================================================
@@ -574,43 +739,60 @@ def main():
     # 步骤3：创建赛道
     # ================================================================
     print("\n--- 创建赛道 ---")
-    # 创建短圈Lusail赛道（默认主跑道）
-    short_lusail = LusailShortTrack()
+    run_sprint_oval = args.track in ("sprint-oval", "all")
+    run_lusail_short = args.track in ("lusail-short", "all")
+    run_original_lusail = args.track in ("lusail", "all")
+    run_custom = args.track in ("custom", "all")
+    run_straight = args.track in ("straight", "all")
 
-    # 可选：创建原始Lusail赛道
-    lusail = LusailTrack() if ENABLE_ORIGINAL_LUSAIL_TRACK else None
-    if not ENABLE_ORIGINAL_LUSAIL_TRACK:
-        print("[Skip] 原始Lusail赛道已禁用（ENABLE_ORIGINAL_LUSAIL_TRACK=False）")
-    custom = None
-    if ENABLE_CUSTOM_TRACK:
-        # 创建自定义弯道赛道（Custom Winding Track）
-        # 这是人工设计的弯道赛道，用于验证算法的泛化能力
-        custom = CustomWindingTrack()
-    else:
-        print("[Skip] 自定义弯道赛道已禁用（ENABLE_CUSTOM_TRACK=False）")
+    sprint_oval = SprintOvalTrack() if run_sprint_oval else None
+    lusail_short = LusailShortTrack() if run_lusail_short else None
+    lusail = LusailTrack() if run_original_lusail else None
+    custom = CustomWindingTrack() if run_custom else None
+    straight = StraightTrack() if run_straight else None
 
     # ================================================================
     # 步骤4：在卢赛尔赛道上运行所有4种方法
     # ================================================================
     # 这部分生成论文中的主要对比结果（表9、表10）
     # 对比4种方法：LMPC、NMPC、K-MPC、K-DRMPC
-    if ENABLE_SHORT_LUSAIL_TRACK:
+    if sprint_oval is not None:
         print("\n" + "#" * 60)
-        print("# 短圈Lusail赛道仿真")
+        print("# 冲刺椭圆短赛道仿真")
         print("#" * 60)
         run_all_methods_on_track(
-            short_lusail, model, D, norm_params, dist_gen,
+            sprint_oval, model, D, norm_params, dist_gen,
             max_steps=sim_max_steps,
             detailed_step_log=detailed_step_log,
             detailed_step_log_max_steps=DETAILED_STEP_LOG_MAX_STEPS,
             cost_profile=args.cost_profile,
             control_update_interval=args.control_every,
             obstacle_strategy=args.obstacle_strategy,
+            theta=theta_val,
+            epsilon=epsilon_val,
         )
     else:
-        print("[Skip] 短圈Lusail赛道已禁用（ENABLE_SHORT_LUSAIL_TRACK=False）")
+        print("[Skip] 冲刺椭圆短赛道未选择（--track）")
 
-    if ENABLE_ORIGINAL_LUSAIL_TRACK and lusail is not None:
+    if lusail_short is not None:
+        print("\n" + "#" * 60)
+        print("# Lusail Short赛道仿真")
+        print("#" * 60)
+        run_all_methods_on_track(
+            lusail_short, model, D, norm_params, dist_gen,
+            max_steps=sim_max_steps,
+            detailed_step_log=detailed_step_log,
+            detailed_step_log_max_steps=DETAILED_STEP_LOG_MAX_STEPS,
+            cost_profile=args.cost_profile,
+            control_update_interval=args.control_every,
+            obstacle_strategy=args.obstacle_strategy,
+            theta=theta_val,
+            epsilon=epsilon_val,
+        )
+    else:
+        print("[Skip] Lusail Short赛道未选择（--track）")
+
+    if lusail is not None:
         print("\n" + "#" * 60)
         print("# 原始Lusail赛道仿真")
         print("#" * 60)
@@ -622,13 +804,15 @@ def main():
             cost_profile=args.cost_profile,
             control_update_interval=args.control_every,
             obstacle_strategy=args.obstacle_strategy,
+            theta=theta_val,
+            epsilon=epsilon_val,
         )
 
     # ================================================================
     # 步骤5：在自定义弯道路上运行所有4种方法
     # ================================================================
     # 这部分验证算法在不同赛道上的泛化能力（表13）
-    if ENABLE_CUSTOM_TRACK and custom is not None:
+    if custom is not None:
         print("\n" + "#" * 60)
         print("# 自定义弯道赛道仿真")
         print("#" * 60)
@@ -642,17 +826,41 @@ def main():
             detailed_step_log_max_steps=DETAILED_STEP_LOG_MAX_STEPS,
             cost_profile=args.cost_profile,
             control_update_interval=args.control_every,
-            obstacle_strategy=args.obstacle_strategy)
+            obstacle_strategy=args.obstacle_strategy,
+            theta=theta_val,
+            epsilon=epsilon_val,
+        )
+    else:
+        print("[Skip] 自定义弯道赛道未选择（--track）")
+
+    if straight is not None:
+        print("\n" + "#" * 60)
+        print("# 笔直赛道仿真")
+        print("#" * 60)
+        run_all_methods_on_track(
+            straight, model, D, norm_params, dist_gen,
+            max_steps=sim_max_steps,
+            detailed_step_log=detailed_step_log,
+            detailed_step_log_max_steps=DETAILED_STEP_LOG_MAX_STEPS,
+            cost_profile=args.cost_profile,
+            control_update_interval=args.control_every,
+            obstacle_strategy=args.obstacle_strategy,
+            theta=theta_val,
+            epsilon=epsilon_val,
+        )
+    else:
+        print("[Skip] 笔直赛道未选择（--track）")
 
     # ================================================================
     # 步骤6：可选分析（默认关闭）
     # ================================================================
     if ENABLE_ROBUSTNESS_ANALYSIS:
+        analysis_track = sprint_oval or lusail_short or lusail or custom or straight or SprintOvalTrack()
         # 鲁棒性分析（论文表11）
         print("\n" + "#" * 60)
         print("# 鲁棒性分析（表11）")
         print("#" * 60)
-        run_robustness_analysis(short_lusail, model, D, norm_params,
+        run_robustness_analysis(analysis_track, model, D, norm_params,
                     max_steps=min(500, sim_max_steps),
                     cost_profile=args.cost_profile,
                     obstacle_strategy=args.obstacle_strategy)
@@ -660,11 +868,12 @@ def main():
         print("\n[Skip] 鲁棒性分析已禁用（ENABLE_ROBUSTNESS_ANALYSIS=False）")
 
     if ENABLE_SENSITIVITY_ANALYSIS:
+        analysis_track = sprint_oval or lusail_short or lusail or custom or straight or SprintOvalTrack()
         # 敏感性分析 - theta（论文表14）
         print("\n" + "#" * 60)
         print("# 敏感性分析 - THETA（表14）")
         print("#" * 60)
-        run_sensitivity_theta(short_lusail, model, D, norm_params, dist_gen,
+        run_sensitivity_theta(analysis_track, model, D, norm_params, dist_gen,
                               max_steps=min(500, sim_max_steps),
                               cost_profile=args.cost_profile,
                               obstacle_strategy=args.obstacle_strategy)
@@ -673,7 +882,7 @@ def main():
         print("\n" + "#" * 60)
         print("# 敏感性分析 - EPSILON（表15）")
         print("#" * 60)
-        run_sensitivity_epsilon(short_lusail, model, D, norm_params, dist_gen,
+        run_sensitivity_epsilon(analysis_track, model, D, norm_params, dist_gen,
                                 max_steps=min(500, sim_max_steps),
                                 cost_profile=args.cost_profile,
                                 obstacle_strategy=args.obstacle_strategy)

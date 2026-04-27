@@ -10,7 +10,12 @@ import sys  # 导入系统模块，用于路径操作
 # 将父目录添加到系统路径，以便导入项目模块
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # 从配置文件导入安全距离和车辆半径常量
-from config import D_SAFE, VEHICLE_RADIUS, IDX_V
+from config import D_SAFE, VEHICLE_RADIUS, IDX_V, IDX_PSI
+
+
+def _wrap_angle(angle):
+    """Wrap angle to [-pi, pi]."""
+    return np.arctan2(np.sin(angle), np.cos(angle))
 
 
 def compute_all_metrics(result, track, obstacles=None, w_samples=None):
@@ -45,17 +50,30 @@ def compute_all_metrics(result, track, obstacles=None, w_samples=None):
 
     # 跟踪误差：计算横向偏差的均方根（RMS）
     lat_errors = []  # 初始化横向误差列表
+    heading_errors = []  # 初始化航向误差列表
+    heading_ref = track.get_heading()
     for t in range(len(positions)):  # 遍历每个时间点的位置
-        _, _, lat_err = track.closest_point(positions[t, 0], positions[t, 1])  # 计算到赛道中心线的横向误差
+        idx, _, lat_err = track.closest_point(positions[t, 0], positions[t, 1])  # 计算到赛道中心线的横向误差
         lat_errors.append(lat_err)  # 将横向误差添加到列表
+        psi_err = _wrap_angle(states[t, IDX_PSI] - heading_ref[idx])
+        heading_errors.append(psi_err)
     lat_errors = np.array(lat_errors)  # 转换为NumPy数组
+    heading_errors = np.array(heading_errors)  # 转换为NumPy数组
     abs_lat_errors = np.abs(lat_errors)  # 绝对横向误差，用于衡量是否贴近中线
+    abs_heading_errors = np.abs(heading_errors)
     metrics['tracking_error_rms'] = np.sqrt(np.mean(lat_errors**2))  # 计算横向误差的均方根
     metrics['tracking_error_max'] = np.max(abs_lat_errors)  # 计算最大绝对横向误差
     metrics['tracking_error_mean_abs'] = np.mean(abs_lat_errors)  # 平均绝对横向误差
     metrics['tracking_error_p95_abs'] = np.percentile(abs_lat_errors, 95)  # 95分位绝对横向误差
     metrics['tracking_within_1m_pct'] = 100.0 * np.mean(abs_lat_errors <= 1.0)  # 落在中线±1m内的比例
     metrics['tracking_within_2m_pct'] = 100.0 * np.mean(abs_lat_errors <= 2.0)  # 落在中线±2m内的比例
+    metrics['heading_error_rms_rad'] = np.sqrt(np.mean(heading_errors**2))
+    metrics['heading_error_max_abs_rad'] = np.max(abs_heading_errors)
+    metrics['heading_error_mean_abs_rad'] = np.mean(abs_heading_errors)
+    metrics['heading_error_p95_abs_rad'] = np.percentile(abs_heading_errors, 95)
+    metrics['heading_error_mean_abs_deg'] = np.degrees(metrics['heading_error_mean_abs_rad'])
+    metrics['heading_error_p95_abs_deg'] = np.degrees(metrics['heading_error_p95_abs_rad'])
+    metrics['heading_error_max_abs_deg'] = np.degrees(metrics['heading_error_max_abs_rad'])
 
     # 统计连续偏离中线（>2m）的最长持续步数
     off_center_mask = abs_lat_errors > 2.0
@@ -148,6 +166,8 @@ def format_metrics_table(all_metrics, methods):
         ('tracking_error_rms', 'Tracking Error RMS (m)', '.2f'),  # 跟踪误差RMS，保留2位小数
         ('tracking_error_p95_abs', 'Tracking Error P95 |e_y| (m)', '.2f'),  # 跟踪误差95分位
         ('tracking_within_2m_pct', 'Tracking Within ±2m (%)', '.1f'),  # 中线±2m覆盖率
+        ('heading_error_mean_abs_deg', 'Heading Mean |e_psi| (deg)', '.2f'),
+        ('heading_error_p95_abs_deg', 'Heading P95 |e_psi| (deg)', '.2f'),
         ('max_speed', 'Max Speed (m/s)', '.1f'),  # 最大速度，保留1位小数
         ('constraint_violation_pct', 'Constraint Violation (%)', '.1f'),  # 约束违反百分比，保留1位小数
         ('cvar_safety_margin', 'CVaR Safety Margin', '.3f'),  # CVaR安全裕度，保留3位小数
@@ -205,6 +225,7 @@ def format_latex_table(all_metrics, methods, caption="", label=""):
     metric_names = [
         ('lap_time', 'Lap Time (s)', '.1f'),  # 圈速时间
         ('tracking_error_rms', 'Tracking Error (m)', '.2f'),  # 跟踪误差
+        ('heading_error_mean_abs_deg', 'Heading Mean (deg)', '.2f'),
         ('max_speed', 'Max Speed (m/s)', '.1f'),  # 最大速度
         ('constraint_violation_pct', 'Constraint Viol. (\\%)', '.1f'),  # 约束违反（注意%需要转义）
         ('solve_time_mean', 'Solve Time (ms)', '.1f'),  # 求解时间
