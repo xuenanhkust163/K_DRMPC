@@ -20,6 +20,8 @@ from config import (
     CONTROL_UPDATE_INTERVAL,
     TRACK_HALF_WIDTH, VEHICLE_RADIUS,
     EXPORT_STATIC_FIGURES, EXPORT_ANIMATION, ANIMATION_FPS,
+    T_HORIZON, ADAPTIVE_REF_HORIZON,
+    REF_PREVIEW_DISTANCE_M, REF_HORIZON_MIN, REF_HORIZON_MAX,
 )
 # 从自行车模型模块导入离散时间步长函数
 from vehicle.bicycle_model import discrete_step
@@ -133,11 +135,19 @@ class Simulator:
         cumulative_s = 0.0  # 初始化累积行驶距离
         prev_s = start_s  # 记录上一步的弧长位置
         crash_lat_limit = max(TRACK_HALF_WIDTH - VEHICLE_RADIUS, 0.0)
+        ds_track = max(max_s / max(track.num_points(), 1), 1e-6)
 
         if verbose:
             print(f"\n正在仿真 {controller.name} 在 {track.__class__.__name__} 赛道上...")
             print(f"  赛道长度: {max_s:.0f}m, 障碍物数量: {len(obstacles)}")
             print(f"  控制更新间隔: 每 {control_update_interval} 步求解一次MPC")
+            if ADAPTIVE_REF_HORIZON:
+                horizon_dist = int(np.ceil(REF_PREVIEW_DISTANCE_M / ds_track))
+                horizon_ref = int(np.clip(horizon_dist, REF_HORIZON_MIN, REF_HORIZON_MAX))
+                print(
+                    f"  参考前瞻: 自适应时域 ON, 目标距离={REF_PREVIEW_DISTANCE_M:.1f}m, "
+                    f"预计时域={horizon_ref}步"
+                )
 
         held_u = np.zeros(2)
         held_info = {'solve_time': 0.0, 'status': 'hold', 'debug': None}
@@ -157,9 +167,13 @@ class Simulator:
             cumulative_s += abs(ds)  # 累加绝对弧长变化
             prev_s = current_s  # 更新上一步的弧长位置
 
-            # 获取参考轨迹
-            from config import T_HORIZON  # 导入预测时域
-            ref = track.get_reference_trajectory(idx, T_HORIZON, current_speed=x[IDX_V])  # 获取从当前索引开始的预测时域内的参考轨迹
+            # 获取参考轨迹（支持按前瞻距离自适应时域）
+            if ADAPTIVE_REF_HORIZON:
+                horizon_dist = int(np.ceil(REF_PREVIEW_DISTANCE_M / ds_track))
+                ref_horizon = int(np.clip(horizon_dist, REF_HORIZON_MIN, REF_HORIZON_MAX))
+            else:
+                ref_horizon = T_HORIZON
+            ref = track.get_reference_trajectory(idx, ref_horizon, current_speed=x[IDX_V])
 
             # 求解MPC优化问题；若开启降频，则在中间步保持上一次控制
             should_solve = (step % control_update_interval == 0)
@@ -262,6 +276,17 @@ class Simulator:
                     key_parts.append(f"obs_slack_max={debug.get('obs_slack_max', 0.0):.3f}")
                     print(f"  diag   = {'; '.join(key_parts)}")
                     print(f"  active = {active}")
+                    if 'probe_u0_delta' in step0:
+                        print(
+                            "  probe  = "
+                            f"delta_prev={step0.get('probe_u_prev_delta', float('nan')):.4f}, "
+                            f"delta0={step0.get('probe_u0_delta', float('nan')):.4f}, "
+                            f"omega_ref={step0.get('probe_ref_omega0', float('nan')):.4f}, "
+                            f"omega_now={step0.get('probe_x_omega0', float('nan')):.4f}, "
+                            f"omega_pred1={step0.get('probe_x_omega1', float('nan')):.4f}, "
+                            f"psi_err0={step0.get('probe_psi_err0', float('nan')):.4f}, "
+                            f"psi_err1={step0.get('probe_psi_err1', float('nan')):.4f}"
+                        )
                 print(f"  noise  = {noise_str}")
                 print(f"  x_next = {x_next_str}")
                 print(

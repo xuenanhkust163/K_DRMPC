@@ -117,6 +117,10 @@ def _load_from_result(path: Path) -> Dict[str, np.ndarray]:
         "ref_v": ref_v,
         "ref_omega": ref_omega,
         "controls": controls,
+        "crashed": data.get("crashed", False),
+        "crash_step": data.get("crash_step", None),
+        "crash_time": data.get("crash_time", None),
+        "crash_reason": data.get("crash_reason", None),
     }
 
 
@@ -210,6 +214,10 @@ def _build_animation(
     tail: int,
     psi_highlight_threshold_deg: Optional[float],
     max_frames: Optional[int] = None,
+    crashed: bool = False,
+    crash_step: Optional[int] = None,
+    crash_time: Optional[float] = None,
+    crash_reason: Optional[str] = None,
 ):
     states = run["states"]
     t = run["time"]
@@ -382,6 +390,22 @@ def _build_animation(
         bbox={"facecolor": "white", "alpha": 0.75, "edgecolor": "none"},
     )
 
+    # Crash visualization
+    crash_text = ax_xy.text(
+        0.5,
+        0.5,
+        "",
+        transform=ax_xy.transAxes,
+        va="center",
+        ha="center",
+        fontsize=20,
+        fontweight="bold",
+        color="red",
+        bbox={"facecolor": "yellow", "alpha": 0.9, "edgecolor": "red", "linewidth": 2},
+        visible=False,
+    )
+    crash_marker, = ax_xy.plot([], [], "X", color="red", markersize=15, markeredgewidth=2, markeredgecolor="darkred")
+
     frame_interval_ms = 1000.0 / max(1, fps) / max(1e-6, speed)
     if max_frames is not None and max_frames > 0 and len(states) > max_frames:
         frame_indices = np.unique(
@@ -443,6 +467,15 @@ def _build_animation(
             f"psi_ref: {np.rad2deg(psi_target):.1f} deg"
         )
 
+        # Handle crash visualization
+        if crashed and crash_step is not None and frame_idx >= crash_step - 1:
+            crash_text.set_visible(True)
+            crash_text.set_text(f"💥 CRASH 💥\n{crash_reason or 'Track boundary hit'}")
+            crash_marker.set_data([x], [y])
+        else:
+            crash_text.set_visible(False)
+            crash_marker.set_data([], [])
+
         return (
             traj_line,
             car_dot,
@@ -462,6 +495,8 @@ def _build_animation(
             delta_now,
             psi_now,
             text_box,
+            crash_text,
+            crash_marker,
         )
 
     anim = FuncAnimation(
@@ -532,6 +567,10 @@ def main():
         tail=args.tail,
         psi_highlight_threshold_deg=args.psi_highlight_threshold_deg,
         max_frames=max_frames,
+        crashed=run.get("crashed", False),
+        crash_step=run.get("crash_step", None),
+        crash_time=run.get("crash_time", None),
+        crash_reason=run.get("crash_reason", None),
     )
 
     if args.save:

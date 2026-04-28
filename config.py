@@ -95,7 +95,7 @@ V_MAX = 4.0               # 最大速度 [米/秒]
 A_MIN = 0.0               # 允许轻微制动，给航向回正留出恢复能力 [米/秒^2]
 A_MAX = 0.5                # 小幅放开纵向加速度上界，抑制长距离提速发散 [米/秒^2]
 DELTA_MAX = np.deg2rad(4.5)  # 最大转向角 [弧度]
-DELTA_RATE_MAX = 0.80        # 最大转向速率 [弧度/秒]
+DELTA_RATE_MAX = 2.0        # 最大转向速率 [弧度/秒]
 D_SAFE = 0.5               # 安全裕度 [米]（避障时的额外安全距离）
 TRACK_HALF_WIDTH = 12.0    # 赛道半宽 W/2 [米]（调整为原配置的1/4）
 TRACK_BOUNDARY_SLACK_PENALTY = 5.0   # 赛道边界松弛惩罚（显著提高，避免“贴边换进度”）
@@ -111,13 +111,19 @@ REF_DECEL_MAX = 1.2        # 参考速度曲线的最大减速度 [米/秒^2]
 # ============================================================
 T_HORIZON = 20             # 预测时域：MPC向前预测20步（2秒）
 
+# 参考前瞻时域配置（当前关闭，保持固定时域求解）
+ADAPTIVE_REF_HORIZON = False
+REF_PREVIEW_DISTANCE_M = 80.0   # 目标前瞻距离 [m]
+REF_HORIZON_MIN = 20            # 自适应时域下限 [步]
+REF_HORIZON_MAX = 80            # 自适应时域上限 [步]
+
 # 代价函数权重（论文第6.1.2节）
 Q_WEIGHTS = np.diag([0.25, 3.5])    # Q矩阵：显著降低v追踪，保留/略增omega稳定
 R_WEIGHTS = np.diag([1.5, 3.0])     # R矩阵：[a, delta]控制输入平滑性的权重对角阵
 
 # 轨迹跟踪调优参数（供K-MPC/K-DRMPC统一读取）
 Q_PSI_TRACK = 14.0                  # 航向误差权重（显著提高）
-Q_PROGRESS_TRACK = 0.03             # 前向进度权重（显著降低）
+Q_PROGRESS_TRACK = 3.0             # 前向进度权重（显著降低）
 Q_POS_TRACK = 20.0                  # 位置误差权重（显著提高）
 POSITION_TERM_INTERVAL = 1          # 位置项加入频率（1=每步）
 R_ABS_A = 2.5                       # 绝对加速度惩罚（降低激进提速）

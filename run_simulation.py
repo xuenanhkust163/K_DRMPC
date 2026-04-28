@@ -198,6 +198,11 @@ def parse_cli_args():
         default="sprint-oval",
         help="选择运行赛道：sprint-oval / lusail-short / lusail / custom / straight / all。",
     )
+    parser.add_argument(
+        "--probe-first-step",
+        action="store_true",
+        help="开启 K-DRMPC 首拍诊断探针，额外输出 delta/omega/psi 的首步预测对照。",
+    )
     return parser.parse_args()
 
 
@@ -392,7 +397,8 @@ def run_all_methods_on_track(track, model, D, norm_params, dist_gen,
                              control_update_interval=1,
                              obstacle_strategy="robust",
                              theta=None,
-                             epsilon=None):
+                             epsilon=None,
+                             probe_first_step=False):
     """
     在单个赛道上运行所有4种MPC方法。
 
@@ -489,7 +495,8 @@ def run_all_methods_on_track(track, model, D, norm_params, dist_gen,
                                   theta=_theta,
                                   epsilon=_epsilon,
                                   cost_profile=cost_profile,
-                                  obstacle_strategy=obstacle_strategy)
+                                  obstacle_strategy=obstacle_strategy,
+                                  enable_debug_probe=probe_first_step)
         # 运行K-DRMPC仿真并保存结果到"K-DRMPC_{赛道名}.pkl"
         results['K-DRMPC'] = run_single_method('K-DRMPC', track, kdrmpc,
                                                dist_gen, max_steps,
@@ -775,6 +782,7 @@ def main():
             obstacle_strategy=args.obstacle_strategy,
             theta=theta_val,
             epsilon=epsilon_val,
+            probe_first_step=args.probe_first_step,
         )
     else:
         print("[Skip] 冲刺椭圆短赛道未选择（--track）")
@@ -793,6 +801,7 @@ def main():
             obstacle_strategy=args.obstacle_strategy,
             theta=theta_val,
             epsilon=epsilon_val,
+            probe_first_step=args.probe_first_step,
         )
     else:
         print("[Skip] Lusail Short赛道未选择（--track）")
@@ -811,6 +820,7 @@ def main():
             obstacle_strategy=args.obstacle_strategy,
             theta=theta_val,
             epsilon=epsilon_val,
+            probe_first_step=args.probe_first_step,
         )
 
     # ================================================================
@@ -834,6 +844,7 @@ def main():
             obstacle_strategy=args.obstacle_strategy,
             theta=theta_val,
             epsilon=epsilon_val,
+            probe_first_step=args.probe_first_step,
         )
     else:
         print("[Skip] 自定义弯道赛道未选择（--track）")
@@ -852,6 +863,7 @@ def main():
             obstacle_strategy=args.obstacle_strategy,
             theta=theta_val,
             epsilon=epsilon_val,
+            probe_first_step=args.probe_first_step,
         )
     else:
         print("[Skip] 笔直赛道未选择（--track）")

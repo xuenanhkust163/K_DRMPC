@@ -71,6 +71,7 @@ from controllers.tracking_costs import (
     resolve_tracking_cost_builder,
 )
 from model.projection import get_fixed_selector_matrices
+from vehicle.bicycle_model import discrete_step
 
 # 障碍物接近阈值：只有车辆在这个距离内才添加障碍物约束
 OBSTACLE_PROXIMITY = 200.0  # 单位：米
@@ -128,7 +129,8 @@ class KDRMPCController:
     def __init__(self, koopman_model, D_matrix, norm_params,
                  disturbance_samples=None, theta=THETA_WASSERSTEIN,
                  epsilon=EPSILON_CVAR, cost_builder=None,
-                 cost_profile="default", obstacle_strategy=DEFAULT_OBSTACLE_STRATEGY):
+                 cost_profile="default", obstacle_strategy=DEFAULT_OBSTACLE_STRATEGY,
+                 enable_debug_probe=False):
         """
         初始化K-DRMPC控制器。
 
@@ -191,6 +193,7 @@ class KDRMPCController:
                 f"收到: {obstacle_strategy}"
             )
         self.obstacle_strategy = obstacle_strategy
+        self.enable_debug_probe = bool(enable_debug_probe)
 
         # ================================================================
         # 干扰样本处理（子采样以保证可处理性）
@@ -310,7 +313,7 @@ class KDRMPCController:
         if u_prev is not None:
             self.u_prev = u_prev
 
-        # 获取预测时域长度（默认20步）
+        # 获取预测时域长度（固定时域）
         T = T_HORIZON
 
         # 记录求解开始时间
@@ -617,6 +620,8 @@ class KDRMPCController:
                 diag_terms=diag_terms,
                 v_slack=v_slack,
                 obs_slack=obs_slack,
+                x_current=x_current,
+                ref_trajectory=ref_trajectory,
             )
 
             # Store warm start
@@ -648,7 +653,7 @@ class KDRMPCController:
             'debug': debug_info,
         }
 
-    def _build_debug_info(self, sol, U, T, diag_terms, v_slack, obs_slack):
+    def _build_debug_info(self, sol, U, T, diag_terms, v_slack, obs_slack, x_current, ref_trajectory):
         """Build numeric debug diagnostics from symbolic expressions and solver solution."""
         u_seq = sol.value(U)
         v_slack_vals = sol.value(v_slack) if v_slack is not None else None
@@ -684,6 +689,28 @@ class KDRMPCController:
             active.append("obs_cvar_slack")
 
         step0 = {name: values[0] for name, values in step_terms.items() if values}
+        if self.enable_debug_probe:
+            u0 = np.array(u_seq[:, 0], dtype=float).flatten()
+            ref0 = np.asarray(ref_trajectory[0], dtype=float)
+            x_pred1 = discrete_step(np.asarray(x_current, dtype=float), u0)
+            psi_err_now = float(np.arctan2(
+                np.sin(float(x_current[IDX_PSI]) - float(ref0[IDX_PSI])),
+                np.cos(float(x_current[IDX_PSI]) - float(ref0[IDX_PSI])),
+            ))
+            psi_err_pred1 = float(np.arctan2(
+                np.sin(float(x_pred1[IDX_PSI]) - float(ref0[IDX_PSI])),
+                np.cos(float(x_pred1[IDX_PSI]) - float(ref0[IDX_PSI])),
+            ))
+            step0['probe_u_prev_delta'] = float(self.u_prev[1])
+            step0['probe_u0_delta'] = float(u0[1])
+            step0['probe_ref_omega0'] = float(ref0[IDX_OMEGA])
+            step0['probe_x_omega0'] = float(x_current[IDX_OMEGA])
+            step0['probe_x_omega1'] = float(x_pred1[IDX_OMEGA])
+            step0['probe_ref_psi0'] = float(ref0[IDX_PSI])
+            step0['probe_x_psi0'] = float(x_current[IDX_PSI])
+            step0['probe_x_psi1'] = float(x_pred1[IDX_PSI])
+            step0['probe_psi_err0'] = psi_err_now
+            step0['probe_psi_err1'] = psi_err_pred1
         summary = {
             'step0': step0,
             'horizon': horizon_terms,
