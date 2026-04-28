@@ -268,6 +268,7 @@ class Simulator:
                     f"  speed  = v:{result.states[-2][IDX_V]:.4f} -> {x_next[IDX_V]:.4f} m/s, "
                     f"omega:{result.states[-2][IDX_OMEGA]:.4f} -> {x_next[IDX_OMEGA]:.4f} rad/s"
                 )
+                print()
 
             # 进度报告（每100步打印一次）
             if verbose and (step + 1) % 100 == 0:
@@ -597,6 +598,7 @@ class Simulator:
             result_path,
             '--fps',
             str(int(ANIMATION_FPS)),
+            '--fast-gif',
             '--save',
             output_path,
         ]

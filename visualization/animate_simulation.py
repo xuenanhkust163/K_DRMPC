@@ -101,6 +101,7 @@ def _load_from_result(path: Path) -> Dict[str, np.ndarray]:
         timestamps = np.arange(len(states), dtype=float) * DT
 
     ref_states = np.asarray(result.ref_states, dtype=float) if len(result.ref_states) else np.empty((0, 5))
+    controls = np.asarray(result.controls, dtype=float) if len(result.controls) else np.empty((0, 2))
     ref_v = np.full(len(states), np.nan, dtype=float)
     ref_omega = np.full(len(states), np.nan, dtype=float)
     if len(ref_states) > 0:
@@ -115,6 +116,7 @@ def _load_from_result(path: Path) -> Dict[str, np.ndarray]:
         "time": timestamps,
         "ref_v": ref_v,
         "ref_omega": ref_omega,
+        "controls": controls,
     }
 
 
@@ -157,6 +159,8 @@ def _load_from_step_log(path: Path) -> Dict[str, np.ndarray]:
                     float(cols[8]),
                     float(cols[9]),
                     float(cols[10]),
+                    float(cols[11]),
+                    float(cols[12]),
                 )
             )
 
@@ -168,6 +172,7 @@ def _load_from_step_log(path: Path) -> Dict[str, np.ndarray]:
     time = rows[:, 1]
     ref_v = rows[:, 7]
     ref_omega = rows[:, 8]
+    controls = rows[:, 9:11]
 
     return {
         "method": method,
@@ -176,6 +181,7 @@ def _load_from_step_log(path: Path) -> Dict[str, np.ndarray]:
         "time": time,
         "ref_v": ref_v,
         "ref_omega": ref_omega,
+        "controls": controls,
     }
 
 
@@ -203,10 +209,25 @@ def _build_animation(
     speed: float,
     tail: int,
     psi_highlight_threshold_deg: Optional[float],
+    max_frames: Optional[int] = None,
 ):
     states = run["states"]
     t = run["time"]
     ref_v = run["ref_v"]
+    controls = np.asarray(run.get("controls", np.empty((0, 2))), dtype=float)
+
+    accel = np.full(len(states), np.nan, dtype=float)
+    delta = np.full(len(states), np.nan, dtype=float)
+    if len(controls) > 0:
+        n_ctrl = min(len(states), len(controls))
+        accel[:n_ctrl] = controls[:n_ctrl, 0]
+        delta[:n_ctrl] = controls[:n_ctrl, 1]
+    delta_rate = np.full(len(states), np.nan, dtype=float)
+    if np.any(np.isfinite(delta)):
+        delta_filled = np.nan_to_num(delta, nan=0.0)
+        delta_rate[0] = 0.0
+        if len(delta_filled) > 1:
+            delta_rate[1:] = np.diff(delta_filled) / DT
 
     errs = _compute_errors(states, track)
     lat_err = errs["lat_err"]
@@ -216,13 +237,25 @@ def _build_animation(
     cx, cy = track.get_centerline()
     (lx, ly), (rx, ry) = _compute_track_boundaries(track)
 
-    fig = plt.figure(figsize=(14, 8))
-    gs = fig.add_gridspec(2, 3, width_ratios=[2.0, 1.0, 1.0], height_ratios=[1.0, 1.0])
+    fig = plt.figure(figsize=(17, 9))
+    gs = fig.add_gridspec(
+        3,
+        4,
+        width_ratios=[2.15, 1.0, 1.0, 1.0],
+        height_ratios=[1.0, 1.0, 1.0],
+    )
 
     ax_xy = fig.add_subplot(gs[:, 0])
-    ax_v = fig.add_subplot(gs[0, 1])
-    ax_lat = fig.add_subplot(gs[0, 2])
-    ax_psi = fig.add_subplot(gs[1, 1:])
+    # Right panel layout (top to bottom):
+    # Row 1: lateral error
+    # Row 2: speed + acceleration/deceleration
+    # Row 3: heading error + steering angle + steering rate
+    ax_lat = fig.add_subplot(gs[0, 1:4])
+    ax_v = fig.add_subplot(gs[1, 1:3])
+    ax_a = fig.add_subplot(gs[1, 3])
+    ax_psi = fig.add_subplot(gs[2, 1])
+    ax_delta = fig.add_subplot(gs[2, 2])
+    ax_drate = fig.add_subplot(gs[2, 3])
 
     ax_xy.plot(lx, ly, "-", color="#444444", linewidth=1.2, alpha=0.8)
     ax_xy.plot(rx, ry, "-", color="#444444", linewidth=1.2, alpha=0.8)
@@ -276,6 +309,14 @@ def _build_animation(
     ax_v.grid(alpha=0.3)
     ax_v.legend(loc="upper right")
 
+    a_hist, = ax_a.plot([], [], color="#17becf", linewidth=1.2)
+    a_now = ax_a.axvline(t[0], color="black", linewidth=1.0, alpha=0.6)
+    ax_a.axhline(0.0, color="gray", linewidth=1.0, alpha=0.5)
+    ax_a.set_title("Acceleration / Deceleration")
+    ax_a.set_xlabel("t (s)")
+    ax_a.set_ylabel("m/s$^2$")
+    ax_a.grid(alpha=0.3)
+
     lat_hist, = ax_lat.plot([], [], color="#ff7f0e", linewidth=1.2)
     lat_now = ax_lat.axvline(t[0], color="black", linewidth=1.0, alpha=0.6)
     ax_lat.axhline(0.0, color="gray", linewidth=1.0, alpha=0.5)
@@ -283,6 +324,22 @@ def _build_animation(
     ax_lat.set_xlabel("t (s)")
     ax_lat.set_ylabel("m")
     ax_lat.grid(alpha=0.3)
+
+    drate_hist, = ax_drate.plot([], [], color="#8c564b", linewidth=1.2)
+    drate_now = ax_drate.axvline(t[0], color="black", linewidth=1.0, alpha=0.6)
+    ax_drate.axhline(0.0, color="gray", linewidth=1.0, alpha=0.5)
+    ax_drate.set_title("Steering Rate")
+    ax_drate.set_xlabel("t (s)")
+    ax_drate.set_ylabel("rad/s")
+    ax_drate.grid(alpha=0.3)
+
+    delta_hist, = ax_delta.plot([], [], color="#bcbd22", linewidth=1.2)
+    delta_now = ax_delta.axvline(t[0], color="black", linewidth=1.0, alpha=0.6)
+    ax_delta.axhline(0.0, color="gray", linewidth=1.0, alpha=0.5)
+    ax_delta.set_title("Steering Angle")
+    ax_delta.set_xlabel("t (s)")
+    ax_delta.set_ylabel("deg")
+    ax_delta.grid(alpha=0.3)
 
     psi_hist, = ax_psi.plot([], [], color="#9467bd", linewidth=1.2)
     psi_now = ax_psi.axvline(t[0], color="black", linewidth=1.0, alpha=0.6)
@@ -293,10 +350,23 @@ def _build_animation(
     ax_psi.grid(alpha=0.3)
 
     ax_lat.set_xlim(t[0], t[-1])
+    ax_a.set_xlim(t[0], t[-1])
+    ax_drate.set_xlim(t[0], t[-1])
+    ax_delta.set_xlim(t[0], t[-1])
     ax_psi.set_xlim(t[0], t[-1])
+    if np.any(np.isfinite(accel)):
+        m = np.nanmax(np.abs(accel))
+        ax_a.set_ylim(-1.1 * m - 1e-6, 1.1 * m + 1e-6)
     if np.isfinite(np.nanmax(np.abs(lat_err))):
         m = np.nanmax(np.abs(lat_err))
         ax_lat.set_ylim(-1.1 * m - 1e-6, 1.1 * m + 1e-6)
+    if np.any(np.isfinite(delta_rate)):
+        m = np.nanmax(np.abs(delta_rate))
+        ax_drate.set_ylim(-1.1 * m - 1e-6, 1.1 * m + 1e-6)
+    if np.any(np.isfinite(delta)):
+        delta_deg = np.rad2deg(delta)
+        m = np.nanmax(np.abs(delta_deg))
+        ax_delta.set_ylim(-1.1 * m - 1e-6, 1.1 * m + 1e-6)
     if np.isfinite(np.nanmax(np.abs(psi_err_deg))):
         m = np.nanmax(np.abs(psi_err_deg))
         ax_psi.set_ylim(-1.1 * m - 1e-6, 1.1 * m + 1e-6)
@@ -313,6 +383,12 @@ def _build_animation(
     )
 
     frame_interval_ms = 1000.0 / max(1, fps) / max(1e-6, speed)
+    if max_frames is not None and max_frames > 0 and len(states) > max_frames:
+        frame_indices = np.unique(
+            np.linspace(0, len(states) - 1, num=int(max_frames), dtype=int)
+        )
+    else:
+        frame_indices = np.arange(len(states), dtype=int)
 
     def _update(frame_idx: int):
         start = max(0, frame_idx - tail) if tail > 0 else 0
@@ -342,9 +418,16 @@ def _build_animation(
                 ref_arrow.set_linewidth(1.0)
 
         lat_hist.set_data(t[: frame_idx + 1], lat_err[: frame_idx + 1])
+        a_hist.set_data(t[: frame_idx + 1], accel[: frame_idx + 1])
+        drate_hist.set_data(t[: frame_idx + 1], delta_rate[: frame_idx + 1])
+        delta_deg = np.rad2deg(delta)
+        delta_hist.set_data(t[: frame_idx + 1], delta_deg[: frame_idx + 1])
         psi_hist.set_data(t[: frame_idx + 1], psi_err_deg[: frame_idx + 1])
         v_now.set_xdata([t[frame_idx], t[frame_idx]])
+        a_now.set_xdata([t[frame_idx], t[frame_idx]])
         lat_now.set_xdata([t[frame_idx], t[frame_idx]])
+        drate_now.set_xdata([t[frame_idx], t[frame_idx]])
+        delta_now.set_xdata([t[frame_idx], t[frame_idx]])
         psi_now.set_xdata([t[frame_idx], t[frame_idx]])
 
         text_box.set_text(
@@ -352,6 +435,9 @@ def _build_animation(
             f"t: {t[frame_idx]:.2f}s\n"
             f"v: {states[frame_idx, IDX_V]:.2f} m/s\n"
             f"ref v: {ref_v[frame_idx]:.2f} m/s\n"
+            f"a: {accel[frame_idx]:.3f} m/s^2\n"
+            f"delta: {delta_deg[frame_idx]:.2f} deg\n"
+            f"delta_dot: {delta_rate[frame_idx]:.3f} rad/s\n"
             f"e_y: {lat_err[frame_idx]:.2f} m\n"
             f"e_psi: {psi_err_deg[frame_idx]:.1f} deg\n"
             f"psi_ref: {np.rad2deg(psi_target):.1f} deg"
@@ -364,10 +450,16 @@ def _build_animation(
             ref_arrow,
             lat_hist,
             psi_hist,
+            a_hist,
+            drate_hist,
+            delta_hist,
             v_line,
             vref_line,
             v_now,
+            a_now,
             lat_now,
+            drate_now,
+            delta_now,
             psi_now,
             text_box,
         )
@@ -375,7 +467,7 @@ def _build_animation(
     anim = FuncAnimation(
         fig,
         _update,
-        frames=len(states),
+        frames=frame_indices,
         interval=frame_interval_ms,
         blit=False,
         repeat=False,
@@ -395,6 +487,23 @@ def main():
     parser.add_argument("--tail", type=int, default=0, help="Show only last N points (0 means full history)")
     parser.add_argument("--save", type=str, default=None, help="Save animation to .gif or .mp4")
     parser.add_argument(
+        "--fast-gif",
+        action="store_true",
+        help="Use faster GIF export settings (fewer frames and lower DPI).",
+    )
+    parser.add_argument(
+        "--max-frames",
+        type=int,
+        default=None,
+        help="Maximum number of rendered frames. If omitted, GIF export auto-limits frame count.",
+    )
+    parser.add_argument(
+        "--dpi",
+        type=int,
+        default=None,
+        help="Output DPI for saved animation. If omitted, GIF export uses a lower DPI automatically.",
+    )
+    parser.add_argument(
         "--psi-highlight-threshold-deg",
         type=float,
         default=None,
@@ -406,6 +515,15 @@ def main():
     track_name = args.track or run["track"]
     track = _build_track(track_name)
 
+    save_ext = Path(args.save).suffix.lower() if args.save else ""
+    save_is_gif = save_ext == ".gif"
+    max_frames = args.max_frames
+    if save_is_gif and max_frames is None:
+        max_frames = 120 if args.fast_gif else 240
+    dpi = args.dpi
+    if save_is_gif and dpi is None:
+        dpi = 72 if args.fast_gif else 80
+
     fig, anim = _build_animation(
         run,
         track,
@@ -413,6 +531,7 @@ def main():
         speed=args.speed,
         tail=args.tail,
         psi_highlight_threshold_deg=args.psi_highlight_threshold_deg,
+        max_frames=max_frames,
     )
 
     if args.save:
@@ -420,9 +539,9 @@ def main():
         out.parent.mkdir(parents=True, exist_ok=True)
         ext = out.suffix.lower()
         if ext == ".gif":
-            anim.save(str(out), writer="pillow", fps=max(1, args.fps))
+            anim.save(str(out), writer="pillow", fps=max(1, args.fps), dpi=dpi)
         else:
-            anim.save(str(out), writer="ffmpeg", fps=max(1, args.fps))
+            anim.save(str(out), writer="ffmpeg", fps=max(1, args.fps), dpi=dpi)
         print(f"Saved animation to {out}")
     else:
         plt.show()

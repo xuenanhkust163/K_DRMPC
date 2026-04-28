@@ -1,5 +1,5 @@
 """
-Lusail-like short circuit approximation (~2.6 km).
+Lusail-like short circuit approximation (~1.3 km).
 
 This track keeps the same geometric style as LusailTrack but scales to a
 shorter lap length for faster closed-loop validation and analysis.
@@ -16,9 +16,9 @@ from config import OBSTACLE_RADIUS, TRACK_HALF_WIDTH
 
 
 class LusailShortTrack(BaseTrack):
-    """Short Lusail-style circuit (~2.6 km)."""
+    """Short Lusail-style circuit (~1.3 km)."""
 
-    def __init__(self, num_points=1200, target_length=2600.0):
+    def __init__(self, num_points=1200, target_length=1300.0):
         super().__init__()
         self._target_points = num_points
         self._target_length = target_length
@@ -95,7 +95,7 @@ class LusailShortTrack(BaseTrack):
         )
 
     def _place_obstacles(self):
-        """Place rectangular obstacles evenly around the lap while keeping the start clear."""
+        """Place rectangular obstacles while adapting to narrow track widths."""
         N = self._num_points
         curvature = self._curvature
 
@@ -113,7 +113,7 @@ class LusailShortTrack(BaseTrack):
         self._rect_obstacles = []
 
         rng = np.random.default_rng(20260427)
-        min_center_spacing = 120.0
+        min_center_spacing = min(120.0, max(30.0, 6.0 * TRACK_HALF_WIDTH))
         placed_centers = []
         for rect_idx, idx in enumerate(corner_indices):
             heading = self._heading[idx]
@@ -124,10 +124,16 @@ class LusailShortTrack(BaseTrack):
             best_candidate = None
             best_spacing = -np.inf
             for _ in range(32):
-                rect_length = rng.uniform(22.0, 34.0)
-                rect_width = rng.uniform(10.0, 18.0)
-                min_offset = 8.0 + 0.25 * rect_length
-                max_offset = TRACK_HALF_WIDTH - 0.5 * rect_length - 3.0
+                usable_cross_span = max(TRACK_HALF_WIDTH - 1.0, 2.0)
+                rect_length_max = min(34.0, max(4.0, usable_cross_span - 1.0))
+                rect_length_min = min(rect_length_max, max(3.0, 0.65 * rect_length_max))
+                rect_width_max = min(18.0, max(4.0, 1.5 * TRACK_HALF_WIDTH))
+                rect_width_min = min(rect_width_max, max(3.0, 0.6 * rect_width_max))
+
+                rect_length = rng.uniform(rect_length_min, rect_length_max)
+                rect_width = rng.uniform(rect_width_min, rect_width_max)
+                min_offset = 0.5 * rect_length + 0.5
+                max_offset = TRACK_HALF_WIDTH - 0.5 * rect_length - 0.5
                 if max_offset <= min_offset:
                     continue
 
@@ -152,7 +158,7 @@ class LusailShortTrack(BaseTrack):
                     best_spacing = spacing
 
             if best_candidate is None:
-                raise RuntimeError("Failed to place Lusail Short rectangular obstacle")
+                continue
 
             cx, cy, rect_length, rect_width, _ = best_candidate
             rect_angle = heading + 0.5 * np.pi  # 长边与中线切向垂直（沿法向）

@@ -238,11 +238,16 @@ def _apply_config_overrides(args):
         'controllers.kdrmpc_controller',
         'controllers.kmpc_controller',
         'controllers.lmpc_controller',
+        'controllers.nmpc_controller',
         'controllers.mpc_common',
         'tracks.base_track',
         'tracks.sprint_oval_track',
+        'tracks.lusail_short_track',
         'tracks.lusail_track',
         'tracks.custom_track',
+        'tracks.straight_track',
+        'simulation.simulator',
+        'vehicle.bicycle_model',
         'disturbance.disturbance_generator',
     ]
     for mod_name in _PATCH_TARGETS:
